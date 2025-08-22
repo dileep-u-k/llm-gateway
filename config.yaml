@@ -1,0 +1,96 @@
+# In file: config.yaml
+# This file centralizes all routing logic, allowing for dynamic updates without code changes.
+
+# Pre-check thresholds used to filter out unhealthy or unreliable models.
+pre_check_thresholds:
+  max_error_rate: 0.5         # Skip models with an error rate > 50%.
+  min_request_count: 20       # Only apply error rate check after 20 requests.
+  health_check_staleness: "5m" # Skip models if the last health check is older than 5 minutes.
+  relevance_threshold: 0.45
+
+# Static metadata about each model. New models can be added here.
+models:
+  gpt-4o:
+    quality_score: 9.8
+    coding_score: 9.9
+  gemini-1.5-flash-latest:
+    quality_score: 8.0
+    coding_score: 8.2
+  claude-sonnet-4-20250514:
+    quality_score: 9.2
+    coding_score: 9.5
+  mistral-large-latest:
+    quality_score: 8.8
+    coding_score: 8.5
+
+
+# Example cost data that should be in your config
+model_costs:
+  gpt-4o:
+    input: 0.000005   # $5.00 / 1M tokens
+    output: 0.00002  # $20.00 / 1M tokens
+  gemini-1.5-flash-latest:
+    input: 0.000000075  # $0.075 / 1M tokens
+    output: 0.0000003 # $0.30 / 1M tokens
+  claude-sonnet-4-20250514:
+    input: 0.000003   # $3.00 / 1M tokens
+    output: 0.000015  # $15.00 / 1M tokens
+  mistral-large-latest:
+    input: 0.000002   # $2.00 / 1M tokens
+    output: 0.000006  # $6.00 / 1M tokens
+    
+# Defines the formulas for different routing preferences.
+# You can add new strategies here and use them immediately.
+strategies:
+  # Default strategy for general-purpose queries
+  default:
+    quality_weight: 0.7   # Prioritize quality, but consider cost
+    cost_weight: 0.2     # Slightly higher cost weight
+    latency_weight: 0.1  # Slightly higher latency sensitivity
+
+  # Max quality strategy (premium queries)
+  max_quality:
+    quality_weight: 0.9
+    cost_weight: 0.0      # Cost is irrelevant for high-stakes queries
+    latency_weight: 0.1
+
+  # Cost-focused strategy (budget-sensitive)
+  cost:
+    quality_weight: 0.2   # Ensure minimum quality
+    cost_weight: 0.7
+    latency_weight: 0.1
+
+  # Latency-focused strategy (interactive apps)
+  latency:
+    quality_weight: 0.2
+    cost_weight: 0.1
+    latency_weight: 0.7
+
+  # Balanced strategy (general real-life use)
+  balanced:
+    quality_weight: 0.5
+    cost_weight: 0.3
+    latency_weight: 0.2
+
+  # Coding-focused strategy (use coding score)
+  best-for-coding:
+    use_coding_score: true
+    quality_weight: 0.85
+    cost_weight: 0.1
+    latency_weight: 0.05
+
+  # --- Dynamic Strategies for Smart-Balanced ---
+  
+  # For expensive requests: prioritize quality
+  quality-focused-balanced:
+    quality_weight: 0.65
+    cost_weight: 0.2
+    latency_weight: 0.15
+
+  # For cheap requests: prioritize speed
+  latency-focused-balanced:
+    quality_weight: 0.45
+    cost_weight: 0.25
+    latency_weight: 0.3
+
+

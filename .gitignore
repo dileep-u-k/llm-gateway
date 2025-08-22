@@ -1,0 +1,3 @@
+# In file: .gitignore
+.env
+bin/

@@ -1,0 +1,42 @@
+# docker-compose.yml
+# This file defines local services for the LLM Gateway project.
+# Start all services with: docker-compose up
+
+services:
+  # The LLM Gateway application service
+  gateway:
+    # 'build: .' tells Docker Compose to build the image from the Dockerfile in the current directory.
+    build: .
+    container_name: llm-gateway-app
+    # The .env_file directive loads your local .env file into the container at runtime.
+    # This is perfect for local development.
+    env_file:
+      - .env
+    ports:
+      # Map the container's port 8081 to your local machine's port 8081.
+      - "8081:8081"
+     # --- ADD THIS SECTION ---
+    volumes:
+      # This line mounts your local config.yaml to /app/config.yaml inside the container.
+      - ./config.yaml:/app/config.yaml
+    # --- END OF SECTION ---
+    # 'depends_on' ensures that Redis is started before the gateway application.
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Redis service for semantic caching and storage
+  # Redis service for caching and storage (remains the same)
+  redis:
+    image: "redis/redis-stack-server:latest"  # Redis with full-stack features
+    container_name: llm-gateway-redis       # Friendly name for the container
+    ports:
+      - "6379:6379"  # Redis default port (for Go or CLI connections)
+      - "8001:8001"  # RedisInsight GUI port
+    volumes:
+      - redis-data:/data  # Persist data even if container restarts
+    restart: unless-stopped  # Auto-restart container if it crashes
+
+volumes:
+  # Named volume to persist Redis data
+  redis-data:

@@ -1,0 +1,17 @@
+# .dockerignore
+
+# Ignore version control files
+.git
+.gitignore
+
+# Ignore local environment files (never package secrets into an image)
+.env
+
+# Ignore Docker files themselves
+Dockerfile
+docker-compose.yml
+
+# Ignore IDE and OS-specific files
+.idea
+.vscode
+*.DS_Store
