@@ -1,0 +1,2 @@
+# llm-gateway
+An intelligent, production-ready LLM Gateway in Go. Features dynamic, real-time routing | session stickiness | automatic failover | RAG pipeline. Optimizes for cost, latency, smart-balanced and quality with multiple models like GPT-4o, Claude, and Gemini.
