@@ -1,50 +1,62 @@
+# .github/workflows/ci-cd.yml
+
 name: Go CI/CD Pipeline
 
+# This workflow triggers on every push to the 'main' branch.
 on:
   push:
     branches: [ "main" ]
 
 jobs:
+  # JOB 1: Continuous Integration (Build & Test)
   build-and-test:
     runs-on: ubuntu-latest
     steps:
+      # Step 1: Check out the repository code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 2: Set up the Go environment
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.5'
+          go-version: '1.22'
 
-      - name: Download Go modules
-        run: go mod download
+      # Step 3: Run linters to check for code quality
+      - name: Run Go linter
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.58.1
 
-      - name: Install golangci-lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /usr/local/bin v1.58.1
-
-      - name: Lint (vendor mode)
-        run: golangci-lint run --modules-download-mode=vendor ./...
-
+      # Step 4: Run unit and integration tests
       - name: Run tests
         run: go test -v ./...
 
+  # JOB 2: Continuous Deployment (Publish Docker Image)
   publish-to-registry:
+    # This job only runs if the 'build-and-test' job was successful.
     needs: build-and-test
     runs-on: ubuntu-latest
     steps:
+      # Step 1: Check out the repository code
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Step 2: Log in to Docker Hub (or your chosen container registry)
+      # You must create secrets in your GitHub repository settings for DOCKERHUB_USERNAME and DOCKERHUB_TOKEN.
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Step 3: Build and push the Docker image
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          # Tag the image with 'latest' and also with the unique Git commit SHA for versioning.
           tags: |
             your-dockerhub-username/llm-gateway:latest
             your-dockerhub-username/llm-gateway:${{ github.sha }}
