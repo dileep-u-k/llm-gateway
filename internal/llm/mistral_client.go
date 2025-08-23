@@ -11,6 +11,7 @@ import (
 	"io"
 	"llm-gateway/internal/api"
 	"llm-gateway/internal/tools"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -73,7 +74,7 @@ var _ LLMClient = (*MistralClient)(nil)
 
 func NewMistralClient(apiKey string) (*MistralClient, error) {
 	if apiKey == "" {
-		return nil, errors.New("Mistral API key cannot be empty")
+		return nil, errors.New("mistral API key cannot be empty")
 	}
 	return &MistralClient{
 		apiKey:     apiKey,
@@ -164,7 +165,7 @@ func (c *MistralClient) doRequest(ctx context.Context, payload *bytes.Buffer) ([
 	return nil, lastErr
 }
 func (c *MistralClient) doRequestStream(ctx context.Context, payload *bytes.Buffer) (io.ReadCloser, error) {
-    // ... (Implementation is the same as the Anthropic client's doRequestStream)
+	// ... (Implementation is the same as the Anthropic client's doRequestStream)
 	req, err := c.createRequest(ctx, payload)
 	if err != nil {
 		return nil, err
@@ -192,6 +193,15 @@ func (c *MistralClient) createRequest(ctx context.Context, body io.Reader) (*htt
 }
 
 func (c *MistralClient) processStream(body io.ReadCloser, outChan chan<- *StreamingResult) {
+
+	// FIX: Check the error from body.Close().
+	defer func() {
+		if err := body.Close(); err != nil {
+			log.Printf("Error closing mistral stream body: %v", err)
+		}
+		close(outChan)
+	}()
+
 	defer body.Close()
 	defer close(outChan)
 	scanner := bufio.NewScanner(body)
@@ -216,7 +226,7 @@ func (c *MistralClient) processStream(body io.ReadCloser, outChan chan<- *Stream
 				result.ContentDelta = delta.Content
 			}
 			if len(delta.ToolCalls) > 0 {
-				tcChunk := delta.ToolCalls[0]
+				tcChunk := delta.ToolCalls[0] // Corrected access
 				result.ToolCallChunk = &tools.ToolCall{
 					ID:   tcChunk.ID,
 					Type: tools.ToolTypeFunction,
@@ -253,7 +263,7 @@ func toMistralTools(availableTools []tools.Tool) []mistralTool {
 	for _, tool := range availableTools {
 		mistralTools = append(mistralTools, mistralTool{
 			Type:     "function",
-			Function: tool.Function, // CORRECTED: Access the nested Function struct
+			Function: tool.Function,
 		})
 	}
 	return mistralTools
@@ -278,7 +288,7 @@ func parseMistralResponse(body []byte) (*GenerationResult, error) {
 			result.ToolCalls = append(result.ToolCalls, &tools.ToolCall{
 				ID:   tc.ID,
 				Type: tools.ToolTypeFunction,
-				Function: tools.ToolCallFunction{ // CORRECTED: Initialize the nested struct
+				Function: tools.ToolCallFunction{
 					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
 				},

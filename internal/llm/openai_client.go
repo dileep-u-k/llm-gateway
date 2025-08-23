@@ -11,11 +11,11 @@ import (
 	"io"
 	"llm-gateway/internal/api"
 	"llm-gateway/internal/tools"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 )
-
 
 // openAIRequest defines the top-level structure for an OpenAI API call.
 type openAIRequest struct {
@@ -39,7 +39,7 @@ type openAIMessage struct {
 
 // openAITool defines the structure for a tool that the API can use.
 type openAITool struct {
-	Type     string       `json:"type"`
+	Type     string         `json:"type"`
 	Function tools.Function `json:"function"`
 }
 
@@ -64,8 +64,7 @@ type openAIStreamChunk struct {
 // --- END OF STRUCTS TO PASTE ---
 
 const (
-	openAIAPIURL     = "https://api.openai.com/v1/chat/completions"
-	
+	openAIAPIURL = "https://api.openai.com/v1/chat/completions"
 )
 
 // OpenAIClient is the client for interacting with OpenAI models like GPT-4.
@@ -82,7 +81,7 @@ var _ LLMClient = (*OpenAIClient)(nil)
 // The modelID is now specified per-request via GenerationConfig, not on the client itself.
 func NewOpenAIClient(apiKey string) (*OpenAIClient, error) {
 	if apiKey == "" {
-		return nil, errors.New("OpenAI API key cannot be empty")
+		return nil, errors.New("openAI API key cannot be empty")
 	}
 	return &OpenAIClient{
 		apiKey: apiKey,
@@ -201,7 +200,9 @@ func (c *OpenAIClient) doRequest(ctx context.Context, payload *bytes.Buffer) ([]
 		}
 
 		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Warning: Failed to close response body: %v", err)
+		}
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read response body: %w", readErr)
 		}
@@ -209,20 +210,19 @@ func (c *OpenAIClient) doRequest(ctx context.Context, payload *bytes.Buffer) ([]
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return body, nil // Success!
 		}
-		
+
 		lastErr = fmt.Errorf("openai API error (attempt %d/%d): status %d, body: %s", i+1, maxRetries, resp.StatusCode, string(body))
-		
+
 		// Do not retry on client errors (e.g., 400 Bad Request).
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			return nil, lastErr
 		}
-		
+
 		time.Sleep(delay)
 		delay *= 2
 	}
 	return nil, lastErr
 }
-
 
 // doRequestStream prepares and executes the HTTP request for streaming.
 func (c *OpenAIClient) doRequestStream(ctx context.Context, payload *bytes.Buffer) (io.ReadCloser, error) {
@@ -238,7 +238,9 @@ func (c *OpenAIClient) doRequestStream(ctx context.Context, payload *bytes.Buffe
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Warning: Failed to close stream response body: %v", err)
+		}
 		return nil, fmt.Errorf("openai API stream error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
@@ -258,6 +260,15 @@ func (c *OpenAIClient) createRequest(ctx context.Context, body io.Reader) (*http
 
 // processStream reads the SSE stream from the response body and sends results to a channel.
 func (c *OpenAIClient) processStream(body io.ReadCloser, outChan chan<- *StreamingResult) {
+
+	// FIX: Check the error from body.Close().
+	defer func() {
+		if err := body.Close(); err != nil {
+			log.Printf("Error closing openai stream body: %v", err)
+		}
+		close(outChan)
+	}()
+
 	defer body.Close()
 	defer close(outChan)
 
@@ -290,7 +301,6 @@ func (c *OpenAIClient) processStream(body io.ReadCloser, outChan chan<- *Streami
 			// Handle tool call chunks, which are streamed progressively.
 			if len(delta.ToolCalls) > 0 {
 				tcChunk := delta.ToolCalls[0]
-				// CORRECTED: Initialize the nested 'Function' struct here as well.
 				result.ToolCallChunk = &tools.ToolCall{
 					ID:   tcChunk.ID,
 					Type: tools.ToolTypeFunction,
@@ -322,7 +332,6 @@ func toOpenAIMessages(messages []Message) []openAIMessage {
 			m.ToolCallID = msg.ToolCallID
 			m.Content = msg.Content
 		case RoleAssistant:
-			// CORRECTED: This now includes both Content and the crucial ToolCalls field
 			m.Content = msg.Content
 			if len(msg.ToolCalls) > 0 {
 				m.ToolCalls = make([]tools.ToolCall, len(msg.ToolCalls))
@@ -347,7 +356,7 @@ func toOpenAITools(availableTools []tools.Tool) []openAITool {
 	for _, tool := range availableTools {
 		openAITools = append(openAITools, openAITool{
 			Type:     "function",
-			Function: tool.Function, // CORRECTED: Access the nested Function struct
+			Function: tool.Function,
 		})
 	}
 	return openAITools
@@ -369,11 +378,9 @@ func parseOpenAIResponse(body []byte) (*GenerationResult, error) {
 		Usage:   openAIResp.Usage,
 	}
 
-	// Check for tool calls and create the struct correctly
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]*tools.ToolCall, 0, len(choice.Message.ToolCalls))
 		for _, tc := range choice.Message.ToolCalls {
-			// CORRECTED: Initialize the nested 'Function' struct
 			toolCall := &tools.ToolCall{
 				ID:   tc.ID,
 				Type: tools.ToolTypeFunction,

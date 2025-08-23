@@ -25,7 +25,6 @@ const (
 
 // --- API Data Structures ---
 
-// FIX 1: Create a new struct that exactly matches the JSON from Anthropic's API.
 type anthropicUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
@@ -60,14 +59,12 @@ type anthropicContentBlock struct {
 }
 type anthropicResponse struct {
 	Content []anthropicContentBlock `json:"content"`
-	// FIX 2: Use the new anthropicUsage struct for perfect JSON mapping.
-	Usage anthropicUsage `json:"usage"`
+	Usage   anthropicUsage          `json:"usage"`
 }
 type anthropicStreamEvent struct {
 	Type  string          `json:"type"`
 	Delta json.RawMessage `json:"delta"`
-	// FIX 3: Also use the new anthropicUsage struct for the stream event.
-	Usage anthropicUsage `json:"usage"`
+	Usage anthropicUsage  `json:"usage"`
 }
 type anthropicStreamTextDelta struct {
 	Type string `json:"type"`
@@ -84,7 +81,7 @@ var _ LLMClient = (*AnthropicClient)(nil)
 
 func NewAnthropicClient(apiKey string) (*AnthropicClient, error) {
 	if apiKey == "" {
-		return nil, errors.New("Anthropic API key cannot be empty")
+		return nil, errors.New("anthropic API key cannot be empty")
 	}
 	return &AnthropicClient{
 		apiKey:     apiKey,
@@ -121,7 +118,11 @@ func (c *AnthropicClient) GenerateStream(ctx context.Context, messages []Message
 // --- Helper Functions ---
 func (c *AnthropicClient) buildRequestPayload(messages []Message, config *GenerationConfig, availableTools []tools.Tool, stream bool) (*bytes.Buffer, error) {
 	systemPrompt, anthropicMsgs := toAnthropicMessages(messages)
-	anthropicTools := toAnthropicTools(availableTools)
+	anthropicTools, err := toAnthropicTools(availableTools)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert tools: %w", err)
+	}
+
 	req := anthropicRequest{
 		Model:       config.Model,
 		Messages:    anthropicMsgs,
@@ -165,22 +166,28 @@ func toAnthropicMessages(messages []Message) (string, []anthropicMessage) {
 	return systemPrompt, anthropicMsgs
 }
 
-func toAnthropicTools(toolsToConvert []tools.Tool) []anthropicTool {
+func toAnthropicTools(toolsToConvert []tools.Tool) ([]anthropicTool, error) {
 	if len(toolsToConvert) == 0 {
-		return nil
+		return nil, nil
 	}
 	anthropicTools := make([]anthropicTool, 0, len(toolsToConvert))
 	for _, t := range toolsToConvert {
-		paramsBytes, _ := json.Marshal(t.Function.Parameters)
+		// FIX 1: Use direct conversion and check for errors.
+		paramsBytes, err := json.Marshal(t.Function.Parameters)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal tool parameters: %w", err)
+		}
 		var paramsMap map[string]interface{}
-		json.Unmarshal(paramsBytes, &paramsMap)
+		if err := json.Unmarshal(paramsBytes, &paramsMap); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal tool parameters: %w", err)
+		}
 		anthropicTools = append(anthropicTools, anthropicTool{
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
 			InputSchema: paramsMap,
 		})
 	}
-	return anthropicTools
+	return anthropicTools, nil
 }
 
 func parseAnthropicResponse(body []byte) (*GenerationResult, error) {
@@ -208,8 +215,6 @@ func parseAnthropicResponse(body []byte) (*GenerationResult, error) {
 			})
 		}
 	}
-
-	// FIX 4: Manually build your internal api.Usage struct from the correctly parsed anthropicUsage.
 	usage := api.Usage{
 		PromptTokens:     anthropicResp.Usage.InputTokens,
 		CompletionTokens: anthropicResp.Usage.OutputTokens,
@@ -224,8 +229,13 @@ func parseAnthropicResponse(body []byte) (*GenerationResult, error) {
 }
 
 func (c *AnthropicClient) processStream(body io.ReadCloser, outChan chan<- *StreamingResult) {
-	defer body.Close()
-	defer close(outChan)
+	defer func() {
+		if err := body.Close(); err != nil {
+			log.Printf("Error closing anthropic stream body: %v", err)
+		}
+		close(outChan)
+	}()
+
 	scanner := bufio.NewScanner(body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -246,7 +256,6 @@ func (c *AnthropicClient) processStream(body io.ReadCloser, outChan chan<- *Stre
 					outChan <- &StreamingResult{ContentDelta: textDelta.Text}
 				}
 			case "message_stop":
-				// FIX 5: Manually build the usage struct for the stream as well.
 				usage := &api.Usage{
 					PromptTokens:     event.Usage.InputTokens,
 					CompletionTokens: event.Usage.OutputTokens,
@@ -262,6 +271,7 @@ func (c *AnthropicClient) processStream(body io.ReadCloser, outChan chan<- *Stre
 	}
 }
 
+// FIX 2: Check the error returned from body.Close() and handle it.
 func (c *AnthropicClient) doRequest(ctx context.Context, payload *bytes.Buffer) ([]byte, error) {
 	var lastErr error
 	delay := initialRetryDelay
@@ -278,7 +288,9 @@ func (c *AnthropicClient) doRequest(ctx context.Context, payload *bytes.Buffer) 
 			continue
 		}
 		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Warning: Failed to close response body: %v", err)
+		}
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read response body: %w", readErr)
 		}
@@ -306,7 +318,9 @@ func (c *AnthropicClient) doRequestStream(ctx context.Context, payload *bytes.Bu
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Warning: Failed to close stream response body: %v", err)
+		}
 		return nil, fmt.Errorf("anthropic API stream error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 	return resp.Body, nil

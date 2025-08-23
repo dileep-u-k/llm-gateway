@@ -4,7 +4,6 @@ package llm
 import (
 	"bytes"
 	"context"
-	"strings"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -31,29 +31,29 @@ const (
 	responseCachePrefix  = "llmcache:"
 	embeddingCacheTTL    = 7 * 24 * time.Hour // Cache embeddings for a week.
 	responseCacheTTL     = 24 * time.Hour     // Cache final responses for a day.
-	
+
 )
 
 // Config holds all the configuration for the RAG service.
 // Loading from the environment makes the service portable and easy to configure.
 type Config struct {
-	OpenAIKey       string
-	PineconeKey     string
-	PineconeHost    string
-	RedisAddr       string
-	EmbeddingModel  string
-	OpenAIAPIURL    string
+	OpenAIKey      string
+	PineconeKey    string
+	PineconeHost   string
+	RedisAddr      string
+	EmbeddingModel string
+	OpenAIAPIURL   string
 }
 
 // LoadConfig loads configuration from environment variables.
 func LoadConfig() (*Config, error) {
 	cfg := &Config{
-		OpenAIKey:       os.Getenv("OPENAI_API_KEY"),
-		PineconeKey:     os.Getenv("PINECONE_API_KEY"),
-		PineconeHost:    os.Getenv("PINECONE_INDEX_HOST"),
-		RedisAddr:       os.Getenv("REDIS_ADDR"),
-		EmbeddingModel:  getEnv("EMBEDDING_MODEL", defaultEmbeddingModel),
-		OpenAIAPIURL:    getEnv("OPENAI_API_URL", defaultOpenAIAPIURL),
+		OpenAIKey:      os.Getenv("OPENAI_API_KEY"),
+		PineconeKey:    os.Getenv("PINECONE_API_KEY"),
+		PineconeHost:   os.Getenv("PINECONE_INDEX_HOST"),
+		RedisAddr:      os.Getenv("REDIS_ADDR"),
+		EmbeddingModel: getEnv("EMBEDDING_MODEL", defaultEmbeddingModel),
+		OpenAIAPIURL:   getEnv("OPENAI_API_URL", defaultOpenAIAPIURL),
 	}
 
 	if cfg.OpenAIKey == "" || cfg.PineconeKey == "" || cfg.PineconeHost == "" || cfg.RedisAddr == "" {
@@ -69,7 +69,6 @@ func getEnv(key, fallback string) string {
 	}
 	return fallback
 }
-
 
 // =================================================================================
 // RAG Service
@@ -176,7 +175,6 @@ func (s *RAGService) GetEmbedding(ctx context.Context, text string) ([]float32, 
 	return embedding, nil
 }
 
-
 // QueryPinecone queries the Pinecone index to find the most relevant document chunks.
 // It returns the concatenated context text, the topic of the top match, and its confidence score.
 func (s *RAGService) QueryPinecone(ctx context.Context, embedding []float32, topK int) (string, string, float64, error) {
@@ -216,7 +214,7 @@ func (s *RAGService) QueryPinecone(ctx context.Context, embedding []float32, top
 
 	body, err := s.doRequestWithRetry(req)
 	if err != nil {
-		return "", "", 0.0, fmt.Errorf("Pinecone query API request failed: %w", err)
+		return "", "", 0.0, fmt.Errorf("pinecone query API request failed: %w", err)
 	}
 
 	var apiResp APIResponse
@@ -320,18 +318,18 @@ func (s *RAGService) doRequestWithRetry(req *http.Request) ([]byte, error) {
 
 // RetrieveContext is a high-level method that gets an embedding and queries Pinecone.
 func (s *RAGService) RetrieveContext(ctx context.Context, text string, topK int) (string, float64, error) {
-    embedding, err := s.GetEmbedding(ctx, text)
-    if err != nil {
-        return "", 0.0, fmt.Errorf("failed to get embedding for RAG context: %w", err)
-    }
+	embedding, err := s.GetEmbedding(ctx, text)
+	if err != nil {
+		return "", 0.0, fmt.Errorf("failed to get embedding for RAG context: %w", err)
+	}
 
-    // The QueryPinecone function now returns context, topic, and score. We only need context and score here.
-    contextText, _, score, err := s.QueryPinecone(ctx, embedding, topK)
-    if err != nil {
-        return "", 0.0, fmt.Errorf("failed to query pinecone for RAG context: %w", err)
-    }
+	// The QueryPinecone function now returns context, topic, and score. We only need context and score here.
+	contextText, _, score, err := s.QueryPinecone(ctx, embedding, topK)
+	if err != nil {
+		return "", 0.0, fmt.Errorf("failed to query pinecone for RAG context: %w", err)
+	}
 
-    return contextText, score, nil
+	return contextText, score, nil
 }
 
 // GenerateVectorsForChunks is a new batch-processing method for the ingestor.

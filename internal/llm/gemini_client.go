@@ -24,7 +24,7 @@ var _ LLMClient = (*GeminiClient)(nil)
 
 func NewGeminiClient(apiKey, modelID string) (*GeminiClient, error) {
 	if apiKey == "" {
-		return nil, errors.New("Gemini API key cannot be empty")
+		return nil, errors.New("gemini API key cannot be empty")
 	}
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
