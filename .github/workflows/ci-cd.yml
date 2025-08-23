@@ -11,9 +11,9 @@ jobs:
   # JOB 1: Continuous Integration (Build & Test)
   build-and-test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: .
+    #defaults:
+    #  run:
+    #    working-directory: .
     steps:
       # Step 1: Check out the repository code
       - name: Checkout code
@@ -31,11 +31,18 @@ jobs:
       - name: Download Go modules   # <--- ADD THIS STEP!
         run: go mod download
 
+      - name: List files and directories
+        run: |
+          pwd
+          ls -la
+
       # Step 3: Run linters to check for code quality
-      - name: Run Go linter
+      - name: Run Go linter (cache disabled)
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.58.1
+          skip-cache: true
+          skip-save-cache: true
 
       # Step 4: Run unit and integration tests
       - name: Run tests
