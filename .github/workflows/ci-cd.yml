@@ -34,36 +34,10 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.58.1
+          args: --modules-download-mode=vendor
 
       # Step 4: Run unit and integration tests
       - name: Run tests
         run: go test -v ./...
 
-  # JOB 2: Continuous Deployment (Publish Docker Image)
-  publish-to-registry:
-    # This job only runs if the 'build-and-test' job was successful.
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    steps:
-      # Step 1: Check out the repository code
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Step 2: Log in to Docker Hub (or your chosen container registry)
-      # You must create secrets in your GitHub repository settings for DOCKERHUB_USERNAME and DOCKERHUB_TOKEN.
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Step 3: Build and push the Docker image
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          # Tag the image with 'latest' and also with the unique Git commit SHA for versioning.
-          tags: |
-            your-dockerhub-username/llm-gateway:latest
-            your-dockerhub-username/llm-gateway:${{ github.sha }}
+  
