@@ -1,0 +1,50 @@
+name: Go CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.5'
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /usr/local/bin v1.58.1
+
+      - name: Lint (vendor mode)
+        run: golangci-lint run --modules-download-mode=vendor ./...
+
+      - name: Run tests
+        run: go test -v ./...
+
+  publish-to-registry:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            your-dockerhub-username/llm-gateway:latest
+            your-dockerhub-username/llm-gateway:${{ github.sha }}
