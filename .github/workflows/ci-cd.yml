@@ -22,6 +22,10 @@ jobs:
         with:
           go-version: '1.24.5'
 
+      - name: Clean Go mod cache (prevent stale deps)
+        run: go clean -modcache
+
+
       - name: Download Go modules # THIS IS THE FIX!
         run: go mod download
 
