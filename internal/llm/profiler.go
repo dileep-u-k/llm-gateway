@@ -4,10 +4,11 @@ package llm
 import (
 	"context"
 	"fmt"
-	"llm-gateway/internal/api"
 	"log"
 	"strconv"
 	"time"
+
+	"github.com/dileep-u-k/llm-gateway/internal/api"
 
 	"github.com/redis/go-redis/v9"
 )

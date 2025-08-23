@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"llm-gateway/internal/api"
-	"llm-gateway/internal/llm"
-	"llm-gateway/internal/tools"
-	cacheversion "llm-gateway/internal/version"
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/dileep-u-k/llm-gateway/internal/api"
+	"github.com/dileep-u-k/llm-gateway/internal/llm"
+	"github.com/dileep-u-k/llm-gateway/internal/tools"
+	cacheversion "github.com/dileep-u-k/llm-gateway/internal/version"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -157,7 +158,7 @@ func (h *GatewayHandler) determineModelID(c *gin.Context, req *api.GenerationReq
 					// FAILOVER for a forced session.
 					log.Printf("🚨 Forced-pinned model '%s' is offline. Failing over...", pinnedModel)
 					req.Config.Preference = "max_quality"
-					failoverInfo = &api.FailoverInfo{ OriginalModel: pinnedModel, Reason: fmt.Sprintf("Model '%s' was offline.", pinnedModel) }
+					failoverInfo = &api.FailoverInfo{OriginalModel: pinnedModel, Reason: fmt.Sprintf("Model '%s' was offline.", pinnedModel)}
 					// Let the request fall through to the router.
 				}
 			} else {
@@ -173,7 +174,7 @@ func (h *GatewayHandler) determineModelID(c *gin.Context, req *api.GenerationReq
 				} else {
 					// FAILOVER for a dynamic session.
 					log.Printf("🚨 Pinned model '%s' is offline. Failing over...", pinnedModel)
-					failoverInfo = &api.FailoverInfo{ OriginalModel: pinnedModel, Reason: fmt.Sprintf("Model '%s' was offline.", pinnedModel) }
+					failoverInfo = &api.FailoverInfo{OriginalModel: pinnedModel, Reason: fmt.Sprintf("Model '%s' was offline.", pinnedModel)}
 				}
 			}
 		}
@@ -211,7 +212,7 @@ func (h *GatewayHandler) determineModelID(c *gin.Context, req *api.GenerationReq
 	estimatedTokens := totalPromptLength / 4
 	log.Printf("... Total estimated input tokens (including history): %d", estimatedTokens)
 	// --- END OF ENHANCEMENT ---
-	
+
 	modelID, err := h.router.SelectOptimalModel(c.Request.Context(), h.config.EnabledModels, req.Config.Preference, estimatedTokens, h.config.ModelBudgets)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
@@ -229,7 +230,6 @@ func (h *GatewayHandler) determineModelID(c *gin.Context, req *api.GenerationReq
 
 	return modelID, failoverInfo, nil
 }
-
 
 // --- HELPER FUNCTIONS ---
 
@@ -337,7 +337,6 @@ func (h *GatewayHandler) handleToolLoop(c *gin.Context, req api.GenerationReques
 	messages := convertAPIMessagesToLLMMessages(req.History)
 	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: req.Prompt})
 	// --- END OF NEW LOGIC ---
-
 
 	llmConfig := &llm.GenerationConfig{
 		Model:       modelID,

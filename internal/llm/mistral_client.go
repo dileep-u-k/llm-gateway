@@ -9,12 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"llm-gateway/internal/api"
-	"llm-gateway/internal/tools"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/dileep-u-k/llm-gateway/internal/api"
+	"github.com/dileep-u-k/llm-gateway/internal/tools"
 )
 
 const (

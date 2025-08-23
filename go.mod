@@ -1,4 +1,4 @@
-module llm-gateway
+module github.com/dileep-u-k/llm-gateway
 
 go 1.24.5
 

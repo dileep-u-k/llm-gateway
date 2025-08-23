@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"llm-gateway/internal/tools"
 	"log"
 	"strings"
+
+	"github.com/dileep-u-k/llm-gateway/internal/tools"
 
 	"github.com/google/generative-ai-go/genai"
 	"google.golang.org/api/iterator"

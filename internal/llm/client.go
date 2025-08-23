@@ -3,8 +3,9 @@ package llm
 
 import (
 	"context"
-	"llm-gateway/internal/api"
-	"llm-gateway/internal/tools"
+
+	"github.com/dileep-u-k/llm-gateway/internal/api"
+	"github.com/dileep-u-k/llm-gateway/internal/tools"
 )
 
 // =================================================================================
@@ -24,10 +25,10 @@ const (
 
 // Message represents a single message in a conversation history.
 type Message struct {
-    Role       Role             `json:"role"`
-    Content    string           `json:"content"`
-    ToolCallID string           `json:"tool_call_id,omitempty"`
-    ToolCalls  []*tools.ToolCall `json:"tool_calls,omitempty"` // <-- This field was missing
+	Role       Role              `json:"role"`
+	Content    string            `json:"content"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
+	ToolCalls  []*tools.ToolCall `json:"tool_calls,omitempty"` // <-- This field was missing
 }
 
 // GenerationConfig holds all the parameters to control the LLM's generation behavior.
@@ -71,7 +72,6 @@ type StreamingResult struct {
 	// An error that may have occurred during the stream.
 	Err error
 }
-
 
 // =================================================================================
 // LLM Client Interface

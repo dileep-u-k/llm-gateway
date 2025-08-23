@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"llm-gateway/internal/llm"
 	"log"
 	"net/http"
 	"os"
@@ -23,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dileep-u-k/llm-gateway/internal/llm"
 
 	"github.com/joho/godotenv"
 )
