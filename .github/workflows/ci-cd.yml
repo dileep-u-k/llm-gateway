@@ -22,6 +22,9 @@ jobs:
         with:
           go-version: '1.24.5'
 
+      - name: Download Go modules   # <--- ADD THIS STEP!
+        run: go mod download
+
       # Step 3: Run linters to check for code quality
       - name: Run Go linter
         uses: golangci/golangci-lint-action@v6
