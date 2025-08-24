@@ -34,7 +34,6 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.58.1
-          args: --modules-download-mode=vendor
 
       # Step 4: Run unit and integration tests
       - name: Run tests
