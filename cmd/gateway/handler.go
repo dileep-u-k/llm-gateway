@@ -162,20 +162,11 @@ func (h *GatewayHandler) determineModelID(c *gin.Context, req *api.GenerationReq
 					// Let the request fall through to the router.
 				}
 			} else {
-				// --- DYNAMIC SESSION LOGIC ---
-				profile, profilerErr := h.profiler.GetProfile(c.Request.Context(), pinnedModel)
-				if profilerErr == nil && profile.Status == "online" {
-					if req.Config.Preference == "" {
-						log.Printf("📌 Dynamic Session HIT. Reusing model: %s", pinnedModel)
-						h.refreshSessionTTL(c.Request.Context(), sessionKey)
-						return pinnedModel, nil, nil
-					}
-					log.Printf("⚠️ User provided a new preference in a dynamic chat. Overriding session...")
-				} else {
-					// FAILOVER for a dynamic session.
-					log.Printf("🚨 Pinned model '%s' is offline. Failing over...", pinnedModel)
-					failoverInfo = &api.FailoverInfo{OriginalModel: pinnedModel, Reason: fmt.Sprintf("Model '%s' was offline.", pinnedModel)}
-				}
+				// --- THIS IS THE FINAL, CORRECTED LOGIC ---
+				// --- DYNAMIC SESSION LOGIC: Always re-evaluate the model choice for every message.
+				log.Printf("🕵️ Dynamic Session HIT. Re-evaluating model for new prompt...")
+				// We don't return here. We let the request "fall through" to the main
+				// routing logic below, which will run the analyzer and router again.
 			}
 		}
 	}
@@ -200,6 +191,9 @@ func (h *GatewayHandler) determineModelID(c *gin.Context, req *api.GenerationReq
 	// This is the path for new dynamic chats, one-off queries, or any failover.
 	if req.Config.Preference == "" {
 		req.Config.Preference = h.promptAnalyzer.Analyze(req.Prompt)
+		log.Printf("🤖 No preference specified. Auto-selected: '%s'", req.Config.Preference)
+	} else {
+		log.Printf("👤 User specified preference: '%s'", req.Config.Preference)
 	}
 
 	// --- THIS IS THE FINAL ENHANCEMENT ---
