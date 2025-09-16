@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"time"
 )
 
@@ -14,211 +15,219 @@ import (
 // Configuration Structs
 // =================================================================================
 
-// RoutingStrategy defines the weights for scoring models based on a preference.
 type RoutingStrategy struct {
-	UseCodingScore bool    `yaml:"use_coding_score"`
-	QualityWeight  float64 `yaml:"quality_weight"`
-	CostWeight     float64 `yaml:"cost_weight"`
-	LatencyWeight  float64 `yaml:"latency_weight"`
+	UseCodingScore    bool    `yaml:"use_coding_score"`
+	QualityWeight     float64 `yaml:"quality_weight"`
+	CostWeight        float64 `yaml:"cost_weight"`
+	LatencyWeight     float64 `yaml:"latency_weight"`
+	ReliabilityWeight float64 `yaml:"reliability_weight"`
 }
 
-// ModelMetadata holds static, configured information about a model.
 type ModelMetadata struct {
-	QualityScore float64 `yaml:"quality_score"`
-	CodingScore  float64 `yaml:"coding_score"`
+	QualityScore float64 `yaml:"quality_score"` // 0–10
+	CodingScore  float64 `yaml:"coding_score"`  // 0–10
 }
 
-// RouterConfig holds the complete configuration for the router.
 type RouterConfig struct {
-	Thresholds map[string]interface{}     `yaml:"pre_check_thresholds"`
-	Models     map[string]ModelMetadata   `yaml:"models"`
-	Strategies map[string]RoutingStrategy `yaml:"strategies"`
+	Thresholds                 map[string]interface{}     `yaml:"pre_check_thresholds"`
+	Models                     map[string]ModelMetadata   `yaml:"models"`
+	Strategies                 map[string]RoutingStrategy `yaml:"strategies"`
+	SmartBalancedCostThreshold float64                    `yaml:"smart_balanced_cost_threshold"`
 }
 
 // =================================================================================
 // Router Service
 // =================================================================================
 
-// Router is a service that selects the best LLM for a given request.
 type Router struct {
 	profiler *Profiler
 	config   *RouterConfig
 }
 
-// NewRouter creates a new, configured router service.
 func NewRouter(profiler *Profiler, config *RouterConfig) *Router {
-	return &Router{
-		profiler: profiler,
-		config:   config,
+	if config.SmartBalancedCostThreshold <= 0 {
+		config.SmartBalancedCostThreshold = 0.001 // safe fallback
 	}
+	return &Router{profiler: profiler, config: config}
 }
 
-// contender holds the profile and metadata for a model that has passed pre-checks.
 type contender struct {
 	Profile       *ModelProfile
 	Metadata      ModelMetadata
 	EstimatedCost float64
 }
 
-// SelectOptimalModel is the core routing algorithm.
-// It now uses a two-pass approach:
-// 1. Filter models that pass pre-checks to create a pool of "contenders".
-// 2. Normalize and score the contenders to find the best one.
-func (r *Router) SelectOptimalModel(ctx context.Context, availableModels []string, preference string, promptTokens int, modelBudgets map[string]float64) (string, error) {
-	log.Printf("--- Starting Model Selection (Preference: '%s') ---", preference)
+// =================================================================================
+// Core Routing
+// =================================================================================
 
-	// --- Pass 1: Filter models and create a pool of contenders ---
+func (r *Router) SelectOptimalModel(
+	ctx context.Context,
+	availableModels []string,
+	preference string,
+	promptTokens int,
+	modelBudgets map[string]float64,
+) (string, error) {
+	log.Printf("--- Starting Model Selection (Preference: %q) ---", preference)
+
+	// Gather contenders
 	contenders := make(map[string]contender)
 	for _, modelID := range availableModels {
 		profile, err := r.profiler.GetProfile(ctx, modelID)
 		if err != nil {
-			log.Printf("Could not get profile for model %s, skipping: %v", modelID, err)
+			log.Printf("⚠️ Skipping model %s: profiler error: %v", modelID, err)
 			continue
 		}
-
-		monthlyBudget := modelBudgets[modelID]
-		if ok, reason := r.passesPreChecks(profile, monthlyBudget); !ok {
-			log.Printf("- Filtering Model: %s | Reason: %s", modelID, reason)
+		if ok, reason := r.passesPreChecks(profile, modelBudgets[modelID]); !ok {
+			log.Printf("⚠️ Filtering model %s: %s", modelID, reason)
 			continue
 		}
-
 		modelMeta, ok := r.config.Models[profile.ModelID]
 		if !ok {
-			log.Printf("- Filtering Model: %s | Reason: Model metadata not found in config.", modelID)
+			log.Printf("⚠️ Skipping model %s: metadata not found in config", modelID)
 			continue
 		}
-
-		// Estimate cost for this specific call for scoring purposes.
-		estimatedOutputTokens := promptTokens * 2 // A simple heuristic.
-		estimatedCost := (float64(promptTokens) * profile.CostPerInputToken) + (float64(estimatedOutputTokens) * profile.CostPerOutputToken)
+		// Conservative: assume output ≈ 2× input tokens
+		estimatedOutputTokens := promptTokens * 2
+		estimatedCost := (float64(promptTokens)*profile.CostPerInputToken +
+			float64(estimatedOutputTokens)*profile.CostPerOutputToken)
 
 		contenders[modelID] = contender{
 			Profile:       profile,
 			Metadata:      modelMeta,
 			EstimatedCost: estimatedCost,
 		}
-		log.Printf("- Model %s is a contender.", modelID)
+		log.Printf("✅ Model %s is a contender", modelID)
 	}
 
 	if len(contenders) == 0 {
-		return "", errors.New("no suitable, healthy, and in-budget model found after filtering")
+		return "", errors.New("no suitable model after filtering")
 	}
-
-	// If there's only one contender, select it immediately.
 	if len(contenders) == 1 {
 		for modelID := range contenders {
-			log.Printf("🏆 Only one contender found. Selecting: %s", modelID)
+			log.Printf("🏆 Only one contender: %s", modelID)
 			return modelID, nil
 		}
 	}
 
-	// --- Pass 2: Normalize and score the contenders ---
+	// Get routing strategy
 	strategy, err := r.getStrategy(preference, contenders)
 	if err != nil {
 		return "", err
 	}
 
+	// Scoring loop
 	bestModel := ""
 	bestScore := -1.0
-
-	// Calculate min/max values across contenders for normalization.
+	var tieBreakers []string
 	minCost, maxCost, minLatency, maxLatency := getNormalizationBounds(contenders)
 
 	for modelID, c := range contenders {
 		score := r.calculateNormalizedScore(c, strategy, minCost, maxCost, minLatency, maxLatency)
-		log.Printf("- Scoring Model: %s | Latency: %dms | Est. Cost: %.6f | Quality: %.2f | Final Score: %.4f",
+		log.Printf("- Score[%s]: Latency=%dms Cost=%.6f Quality=%.2f Final=%.4f",
 			modelID, c.Profile.AvgLatencyMS, c.EstimatedCost, c.Metadata.QualityScore, score)
 
 		if score > bestScore {
 			bestScore = score
 			bestModel = modelID
+			tieBreakers = []string{modelID}
+		} else if score == bestScore {
+			tieBreakers = append(tieBreakers, modelID)
 		}
 	}
 
 	if bestModel == "" {
-		// This should theoretically not be reached if there are contenders, but it's a safe fallback.
-		return "", errors.New("failed to select a model after scoring")
+		return "", errors.New("failed to select best model")
 	}
 
-	log.Printf("🏆 Best model selected: %s (Score: %.4f)", bestModel, bestScore)
+	// Deterministic tie-breaking
+	if len(tieBreakers) > 1 {
+		sort.Strings(tieBreakers)
+		bestModel = tieBreakers[0]
+		log.Printf("⭐ Tie-break: multiple models scored %.4f, chose %s", bestScore, bestModel)
+	}
+
+	log.Printf("🏆 Selected best model: %s (Score=%.4f)", bestModel, bestScore)
 	return bestModel, nil
 }
 
-// getStrategy retrieves the appropriate routing strategy based on the preference.
-// It also handles the dynamic logic for "smart-balanced".
+// =================================================================================
+// Strategy & Scoring
+// =================================================================================
+
 func (r *Router) getStrategy(preference string, contenders map[string]contender) (RoutingStrategy, error) {
-	// The "smart-balanced" strategy has dynamic weights based on the prompt size.
 	if preference == "smart-balanced" {
-		// Example dynamic logic: for cheap requests, prioritize speed; for expensive ones, quality.
-		// This could be made more sophisticated by moving thresholds to the config.
 		avgCost := 0.0
 		for _, c := range contenders {
 			avgCost += c.EstimatedCost
 		}
-		avgCost /= float64(len(contenders))
-
-		if avgCost < 0.001 { // For cheap requests, prioritize speed.
-			log.Println("Smart-balanced mode: Prioritizing latency for low-cost request.")
-			return r.config.Strategies["latency-focused-balanced"], nil
-		} else { // For expensive requests, prioritize quality.
-			log.Println("Smart-balanced mode: Prioritizing quality for high-cost request.")
-			return r.config.Strategies["quality-focused-balanced"], nil
+		if len(contenders) > 0 {
+			avgCost /= float64(len(contenders))
 		}
+
+		if avgCost < r.config.SmartBalancedCostThreshold {
+			log.Printf("Smart-balanced: avg cost %.6f < threshold %.6f → latency-priority",
+				avgCost, r.config.SmartBalancedCostThreshold)
+			return r.config.Strategies["latency-focused-balanced"], nil
+		}
+		log.Printf("Smart-balanced: avg cost %.6f ≥ threshold %.6f → quality-priority",
+			avgCost, r.config.SmartBalancedCostThreshold)
+		return r.config.Strategies["quality-focused-balanced"], nil
 	}
 
 	strategy, ok := r.config.Strategies[preference]
 	if !ok {
-		// Fallback to the default strategy if the preference is unknown.
-		log.Printf("Warning: preference '%s' not found, falling back to 'default' strategy.", preference)
+		log.Printf("⚠️ Strategy %q not found, falling back to 'default'", preference)
 		strategy, ok = r.config.Strategies["default"]
 		if !ok {
-			return RoutingStrategy{}, errors.New("default strategy not found in configuration")
+			return RoutingStrategy{}, errors.New("no 'default' strategy configured")
 		}
 	}
 	return strategy, nil
 }
 
-// calculateNormalizedScore computes a model's score using linear normalization.
-// This ensures that weights have a predictable, proportional impact.
-func (r *Router) calculateNormalizedScore(c contender, strategy RoutingStrategy, minCost, maxCost, minLatency, maxLatency float64) float64 {
-	// --- Normalize Component Factors (so that 1.0 is best, 0.0 is worst) ---
-
-	// Latency: Lower is better.
-	latencyFactor := 0.5 // Default to average if min/max are the same
+func (r *Router) calculateNormalizedScore(
+	c contender,
+	strategy RoutingStrategy,
+	minCost, maxCost, minLatency, maxLatency float64,
+) float64 {
+	// Normalize latency (lower = better)
+	latencyFactor := 0.5
 	if maxLatency > minLatency {
 		latencyFactor = (maxLatency - float64(c.Profile.AvgLatencyMS)) / (maxLatency - minLatency)
 	}
 
-	// Cost: Lower is better.
-	costFactor := 0.5 // Default to average if min/max are the same
+	// Normalize cost (lower = better)
+	costFactor := 0.5
 	if maxCost > minCost {
 		costFactor = (maxCost - c.EstimatedCost) / (maxCost - minCost)
 	}
 
-	// Quality: Higher is better. This score is already a relative value, so no normalization needed.
-	qualityFactor := c.Metadata.QualityScore / 10.0 // Normalize to a 0-1 scale
+	// Normalize quality/coding score (higher = better)
+	qualityFactor := c.Metadata.QualityScore / 10.0
 	if strategy.UseCodingScore {
 		qualityFactor = c.Metadata.CodingScore / 10.0
 	}
 
-	// Reliability: Higher is better.
+	// Reliability (1 - error rate)
 	reliabilityFactor := 1.0 - c.Profile.ErrorRate
 
-	// --- Final Weighted Score Calculation ---
-	// The reliability factor acts as a multiplier on the weighted average of other factors.
-	score := ((strategy.QualityWeight * qualityFactor) +
-		(strategy.CostWeight * costFactor) +
-		(strategy.LatencyWeight * latencyFactor)) * reliabilityFactor
+	// Clamp all values between 0–1
+	latencyFactor = clamp01(latencyFactor)
+	costFactor = clamp01(costFactor)
+	qualityFactor = clamp01(qualityFactor)
+	reliabilityFactor = clamp01(reliabilityFactor)
 
-	return score
+	// Weighted score
+	return (strategy.QualityWeight * qualityFactor) +
+		(strategy.CostWeight * costFactor) +
+		(strategy.LatencyWeight * latencyFactor) +
+		(strategy.ReliabilityWeight * reliabilityFactor)
 }
 
-// getNormalizationBounds finds the min/max cost and latency from the pool of contenders.
 func getNormalizationBounds(contenders map[string]contender) (minCost, maxCost, minLatency, maxLatency float64) {
-	minCost = math.MaxFloat64
-	maxCost = 0.0
-	minLatency = math.MaxFloat64
-	maxLatency = 0.0
+	minCost, maxCost = math.MaxFloat64, 0.0
+	minLatency, maxLatency = math.MaxFloat64, 0.0
 
 	for _, c := range contenders {
 		if c.EstimatedCost < minCost {
@@ -227,41 +236,70 @@ func getNormalizationBounds(contenders map[string]contender) (minCost, maxCost, 
 		if c.EstimatedCost > maxCost {
 			maxCost = c.EstimatedCost
 		}
-		latency := float64(c.Profile.AvgLatencyMS)
-		if latency < minLatency {
-			minLatency = latency
+		lat := float64(c.Profile.AvgLatencyMS)
+		if lat < minLatency {
+			minLatency = lat
 		}
-		if latency > maxLatency {
-			maxLatency = latency
+		if lat > maxLatency {
+			maxLatency = lat
 		}
+	}
+	if minCost == math.MaxFloat64 {
+		minCost = 0
+	}
+	if minLatency == math.MaxFloat64 {
+		minLatency = 0
 	}
 	return
 }
 
-// passesPreChecks evaluates a model against configured health, budget, and reliability thresholds.
+// =================================================================================
+// Pre-checks
+// =================================================================================
+
 func (r *Router) passesPreChecks(profile *ModelProfile, monthlyBudget float64) (bool, string) {
-	// Health Check
-	staleness, _ := time.ParseDuration(r.config.Thresholds["health_check_staleness"].(string))
+	// Staleness threshold
+	staleness := 5 * time.Minute
+	if val, ok := r.config.Thresholds["health_check_staleness"].(string); ok {
+		if parsed, err := time.ParseDuration(val); err == nil {
+			staleness = parsed
+		}
+	}
+
+	// Hard filters
 	if profile.Status == "offline" {
-		return false, "Model is marked as offline."
+		return false, "offline"
 	}
 	if time.Since(profile.LastHealthCheck) > staleness {
-		return false, fmt.Sprintf("Health check is stale (last check > %s ago).", staleness)
+		return false, fmt.Sprintf("health check stale > %s", staleness)
 	}
-
-	// Budget Check
 	if monthlyBudget > 0 && profile.CostSpentMonthly >= monthlyBudget {
-		return false, fmt.Sprintf("Over monthly budget ($%.4f / $%.2f).", profile.CostSpentMonthly, monthlyBudget)
+		return false, fmt.Sprintf("over budget $%.4f / $%.2f", profile.CostSpentMonthly, monthlyBudget)
 	}
 
-	// Error Rate Check
-	maxErrorRate := r.config.Thresholds["max_error_rate"].(float64)
-	minRequests := int64(r.config.Thresholds["min_request_count"].(int))
-	totalRequests := profile.TotalSuccesses + profile.TotalFailures
+	// Error rate threshold
+	maxErrorRate := 0.15
+	if val, ok := r.config.Thresholds["max_error_rate"].(float64); ok {
+		maxErrorRate = val
+	}
 
-	if totalRequests > minRequests && profile.ErrorRate > maxErrorRate {
-		return false, fmt.Sprintf("Error rate is too high (%.2f%% > %.2f%%).", profile.ErrorRate*100, maxErrorRate*100)
+	minRequests := int64(20)
+	if val, ok := r.config.Thresholds["min_request_count"].(int); ok {
+		minRequests = int64(val)
+	}
+
+	totalReq := profile.TotalSuccesses + profile.TotalFailures
+	if totalReq >= minRequests && profile.ErrorRate > maxErrorRate {
+		return false, fmt.Sprintf("error rate too high %.2f%% > %.2f%%", profile.ErrorRate*100, maxErrorRate*100)
 	}
 
 	return true, ""
+}
+
+// =================================================================================
+// Utils
+// =================================================================================
+
+func clamp01(v float64) float64 {
+	return math.Max(0, math.Min(1, v))
 }

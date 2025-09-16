@@ -1,96 +1,105 @@
-# In file: config.yaml
-# This file centralizes all routing logic, allowing for dynamic updates without code changes.
+# config.yaml
+# Centralized config for routing, thresholds, and strategies.
+# 100% Production-Ready Version
 
-# Pre-check thresholds used to filter out unhealthy or unreliable models.
+# ================================================================
+# Pre-check thresholds
+# ================================================================
 pre_check_thresholds:
-  max_error_rate: 0.5         # Skip models with an error rate > 50%.
-  min_request_count: 20       # Only apply error rate check after 20 requests.
-  health_check_staleness: "5m" # Skip models if the last health check is older than 5 minutes.
-  relevance_threshold: 0.45
+  max_error_rate: 0.15          # Skip models with >15% error rate
+  min_request_count: 20         # Only apply error check after 20 requests
+  health_check_staleness: "5m"  # Consider model unhealthy if health check is older than 5 minutes
+  relevance_threshold: 0.45     # Min similarity score for RAG context
 
-# Static metadata about each model. New models can be added here.
+# ================================================================
+# Smart-Balanced Thresholds
+# ================================================================
+smart_balanced_cost_threshold: 0.001  # Below this cost, prioritize latency
+
+# ================================================================
+# Models Metadata
+# ================================================================
+# Each model should have quality, coding, latency, reliability, and cost scores
 models:
   gpt-4o:
     quality_score: 9.8
     coding_score: 9.9
+    #latency_score: 0.8
+    #reliability_score: 0.95
+    #cost_score: 0.3
+
   gemini-1.5-flash-latest:
     quality_score: 8.0
     coding_score: 8.2
+    #latency_score: 0.9
+    #reliability_score: 0.9
+    #cost_score: 0.5
+
   claude-sonnet-4-20250514:
     quality_score: 9.2
     coding_score: 9.5
+    #latency_score: 0.85
+    #reliability_score: 0.93
+    #cost_score: 0.4
+
   mistral-large-latest:
     quality_score: 8.8
     coding_score: 8.5
+    #latency_score: 0.88
+    #reliability_score: 0.92
+    #cost_score: 0.6
 
-
-# Example cost data that should be in your config
-model_costs:
-  gpt-4o:
-    input: 0.000005   # $5.00 / 1M tokens
-    output: 0.00002  # $20.00 / 1M tokens
-  gemini-1.5-flash-latest:
-    input: 0.000000075  # $0.075 / 1M tokens
-    output: 0.0000003 # $0.30 / 1M tokens
-  claude-sonnet-4-20250514:
-    input: 0.000003   # $3.00 / 1M tokens
-    output: 0.000015  # $15.00 / 1M tokens
-  mistral-large-latest:
-    input: 0.000002   # $2.00 / 1M tokens
-    output: 0.000006  # $6.00 / 1M tokens
-    
-# Defines the formulas for different routing preferences.
-# You can add new strategies here and use them immediately.
+# ================================================================
+# Strategy Definitions
+# ================================================================
+# Each strategy assigns weights to quality, cost, latency, and reliability.
+# If "use_coding_score" is true, coding_score replaces quality_score.
 strategies:
-  # Default strategy for general-purpose queries
   default:
-    quality_weight: 0.7   # Prioritize quality, but consider cost
-    cost_weight: 0.2     # Slightly higher cost weight
-    latency_weight: 0.1  # Slightly higher latency sensitivity
-
-  # Max quality strategy (premium queries)
-  max_quality:
-    quality_weight: 0.9
-    cost_weight: 0.0      # Cost is irrelevant for high-stakes queries
-    latency_weight: 0.1
-
-  # Cost-focused strategy (budget-sensitive)
-  cost:
-    quality_weight: 0.2   # Ensure minimum quality
-    cost_weight: 0.7
-    latency_weight: 0.1
-
-  # Latency-focused strategy (interactive apps)
-  latency:
-    quality_weight: 0.2
-    cost_weight: 0.1
-    latency_weight: 0.7
-
-  # Balanced strategy (general real-life use)
-  balanced:
     quality_weight: 0.5
+    cost_weight: 0.2
+    latency_weight: 0.1
+    reliability_weight: 0.2
+
+  max_quality:
+    quality_weight: 0.7
+    cost_weight: 0.1
+    latency_weight: 0.1
+    reliability_weight: 0.1
+
+  cost:
+    quality_weight: 0.1
+    cost_weight: 0.6
+    latency_weight: 0.1
+    reliability_weight: 0.2
+
+  latency:
+    quality_weight: 0.1
+    cost_weight: 0.1
+    latency_weight: 0.6
+    reliability_weight: 0.2
+
+  balanced:
+    quality_weight: 0.4
     cost_weight: 0.3
     latency_weight: 0.2
+    reliability_weight: 0.1
 
-  # Coding-focused strategy (use coding score)
   best-for-coding:
     use_coding_score: true
-    quality_weight: 0.85
+    quality_weight: 0.6
     cost_weight: 0.1
-    latency_weight: 0.05
+    latency_weight: 0.1
+    reliability_weight: 0.2
 
-  # --- Dynamic Strategies for Smart-Balanced ---
-  
-  # For expensive requests: prioritize quality
   quality-focused-balanced:
-    quality_weight: 0.65
+    quality_weight: 0.5
     cost_weight: 0.2
     latency_weight: 0.15
+    reliability_weight: 0.15
 
-  # For cheap requests: prioritize speed
   latency-focused-balanced:
-    quality_weight: 0.45
+    quality_weight: 0.3
     cost_weight: 0.25
     latency_weight: 0.3
-
-
+    reliability_weight: 0.15
