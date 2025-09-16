@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -55,7 +56,7 @@ func (nt *NewsTool) Definition() Tool {
 					Description: "The topic or keyword to search for in the news, e.g., 'artificial intelligence' or 'latest space missions'.",
 				},
 				"category": {
-					Type: "string",
+					Type:        "string",
 					Description: `The category of news. Must be one of: business, entertainment, general, health, science, sports, technology.`,
 				},
 				"country": {
@@ -110,7 +111,14 @@ func (nt *NewsTool) Execute(arguments string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to call news API: %w", err)
 	}
-	defer resp.Body.Close()
+	//defer resp.Body.Close() gfgffhf
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Log but don’t crash (closing errors are rare but possible)
+			log.Printf("warning: failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Sprintf("Error: News API returned a non-200 status code: %d. Please check the parameters or API key.", resp.StatusCode), nil

@@ -299,7 +299,12 @@ func (s *RAGService) doRequestWithRetry(req *http.Request) ([]byte, error) {
 		}
 
 		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+
+		// resp.Body.Close() gfhgfgffh
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("warning: failed to close response body: %v", err)
+		}
+
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read response body: %w", readErr)
 		}

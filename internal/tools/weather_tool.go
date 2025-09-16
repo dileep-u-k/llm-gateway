@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -71,7 +72,7 @@ func (wt *WeatherTool) Execute(arguments string) (string, error) {
 	// Use wttr.in, a simple text-based weather API perfect for LLM consumption.
 	// We use the configured httpClient with a timeout for this call.
 	url := fmt.Sprintf("https://wttr.in/%s?format=3", strings.ReplaceAll(args.Location, " ", "+"))
-	
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create weather API request: %w", err)
@@ -83,7 +84,14 @@ func (wt *WeatherTool) Execute(arguments string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to call weather API: %w", err)
 	}
-	defer resp.Body.Close()
+	//defer resp.Body.Close() hjghvfhv
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Log but don’t crash (closing errors are rare but possible)
+			log.Printf("warning: failed to close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("weather API returned non-200 status: %d", resp.StatusCode)
@@ -93,7 +101,7 @@ func (wt *WeatherTool) Execute(arguments string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read weather API response: %w", err)
 	}
-	
+
 	responseString := string(body)
 	if strings.Contains(responseString, "Unknown location") {
 		return fmt.Sprintf("I couldn't find the weather for '%s'. Please try another location.", args.Location), nil

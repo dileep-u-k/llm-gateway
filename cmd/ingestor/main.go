@@ -350,7 +350,13 @@ func (i *Ingestor) doRequestWithRetry(req *http.Request) ([]byte, error) {
 		}
 
 		body, err = io.ReadAll(resp.Body)
-		resp.Body.Close() // Close the body immediately after reading.
+
+		//hjgvhjgghffgdd
+		//resp.Body.Close() // Close the body immediately after reading.
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("warning: failed to close response body: %v", err)
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response body: %w", err)
 		}

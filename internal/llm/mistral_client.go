@@ -149,7 +149,16 @@ func (c *MistralClient) doRequest(ctx context.Context, payload *bytes.Buffer) ([
 			continue
 		}
 		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+
+		//jwbshjbwjvwjvwvhwv
+		//resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				// Log but don’t crash (closing errors are rare but possible)
+				log.Printf("warning: failed to close response body: %v", err)
+			}
+		}()
+
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read response body: %w", readErr)
 		}
@@ -177,7 +186,13 @@ func (c *MistralClient) doRequestStream(ctx context.Context, payload *bytes.Buff
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+
+		//resp.Body.Close() hfhgffhff
+
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("warning: failed to close response body: %v", err)
+		}
+
 		return nil, fmt.Errorf("anthropic API stream error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 	return resp.Body, nil
@@ -203,7 +218,15 @@ func (c *MistralClient) processStream(body io.ReadCloser, outChan chan<- *Stream
 		close(outChan)
 	}()
 
-	defer body.Close()
+	//hghgxghfsqxghfcgc
+	//defer body.Close()
+
+	defer func() {
+		if err := body.Close(); err != nil {
+			log.Printf("warning: failed to close body: %v", err)
+		}
+	}()
+
 	defer close(outChan)
 	scanner := bufio.NewScanner(body)
 	for scanner.Scan() {

@@ -270,7 +270,13 @@ func (c *OpenAIClient) processStream(body io.ReadCloser, outChan chan<- *Streami
 		close(outChan)
 	}()
 
-	defer body.Close()
+	//defer body.Close()
+	defer func() {
+		if err := body.Close(); err != nil {
+			log.Printf("warning: failed to close body: %v", err)
+		}
+	}()
+
 	defer close(outChan)
 
 	scanner := bufio.NewScanner(body)
