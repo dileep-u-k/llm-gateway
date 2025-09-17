@@ -24,7 +24,7 @@ models:
   gpt-4o:
     quality_score: 9.8
     coding_score: 9.9
-    #latency_score: 0.8
+    #latency_score: 0.8 # These are illustrative comments, not actual config fields
     #reliability_score: 0.95
     #cost_score: 0.3
 
@@ -50,54 +50,81 @@ models:
     #cost_score: 0.6
 
 # ================================================================
+# Model Cost Data (REQUIRED for accurate profiling and routing)
+# ================================================================
+model_costs:
+  gpt-4o:
+    input: 0.000005   # $5.00 / 1M tokens
+    output: 0.00002   # $20.00 / 1M tokens
+  gemini-1.5-flash-latest:
+    input: 0.000000075 # $0.075 / 1M tokens
+    output: 0.0000003 # $0.30 / 1M tokens
+  claude-sonnet-4-20250514:
+    input: 0.000003   # $3.00 / 1M tokens
+    output: 0.000015  # $15.00 / 1M tokens
+  mistral-large-latest:
+    input: 0.000002   # $2.00 / 1M tokens
+    output: 0.000006  # $6.00 / 1M tokens
+
+# ================================================================
 # Strategy Definitions
 # ================================================================
 # Each strategy assigns weights to quality, cost, latency, and reliability.
 # If "use_coding_score" is true, coding_score replaces quality_score.
 strategies:
+  # For general-purpose queries where quality is most important, but not at any cost.
   default:
-    quality_weight: 0.5
+    quality_weight: 0.6
     cost_weight: 0.2
-    latency_weight: 0.1
-    reliability_weight: 0.2
-
-  max_quality:
-    quality_weight: 0.7
-    cost_weight: 0.1
     latency_weight: 0.1
     reliability_weight: 0.1
 
-  cost:
-    quality_weight: 0.1
-    cost_weight: 0.6
-    latency_weight: 0.1
-    reliability_weight: 0.2
-
-  latency:
-    quality_weight: 0.1
+  # For critical tasks where the absolute best-quality answer is required, regardless of cost.
+  max_quality:
+    quality_weight: 0.8
     cost_weight: 0.1
-    latency_weight: 0.6
-    reliability_weight: 0.2
+    latency_weight: 0.05
+    reliability_weight: 0.05
 
+  # For non-critical, bulk processing tasks where minimizing expense is the top priority.
+  cost:
+    quality_weight: 0.2
+    cost_weight: 0.65
+    latency_weight: 0.1
+    reliability_weight: 0.05
+
+  # For interactive, real-time applications where the speed of the response is paramount.
+  latency:
+    quality_weight: 0.2
+    cost_weight: 0.1
+    latency_weight: 0.65
+    reliability_weight: 0.05
+
+  # A versatile, all-around strategy for a good mix of performance.
   balanced:
     quality_weight: 0.4
     cost_weight: 0.3
     latency_weight: 0.2
     reliability_weight: 0.1
 
+  # For all coding-related tasks, using the specialized 'coding_score' for quality.
   best-for-coding:
     use_coding_score: true
-    quality_weight: 0.6
+    quality_weight: 0.7
     cost_weight: 0.1
     latency_weight: 0.1
-    reliability_weight: 0.2
+    reliability_weight: 0.1
+  
+  # --- Dynamic Strategies used by the "smart-balanced" mode ---
 
+  # Used by 'smart-balanced' for expensive requests; prioritizes quality.
   quality-focused-balanced:
     quality_weight: 0.5
     cost_weight: 0.2
     latency_weight: 0.15
     reliability_weight: 0.15
 
+  # Used by 'smart-balanced' for cheap requests; prioritizes speed.
   latency-focused-balanced:
     quality_weight: 0.3
     cost_weight: 0.25
