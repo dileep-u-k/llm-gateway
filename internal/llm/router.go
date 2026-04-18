@@ -33,7 +33,31 @@ type RouterConfig struct {
 	Models                     map[string]ModelMetadata   `yaml:"models"`
 	Strategies                 map[string]RoutingStrategy `yaml:"strategies"`
 	SmartBalancedCostThreshold float64                    `yaml:"smart_balanced_cost_threshold"`
+
+	// --- ADD THESE LINES ---
+	ImageModels     map[string]ImageModelMetadata   `yaml:"image_models"`
+	ImageStrategies map[string]ImageRoutingStrategy `yaml:"image_strategies"`
 }
+
+// --- ADD THESE NEW STRUCTS FOR IMAGE GENERATION ---
+
+// ImageModelMetadata defines static capabilities of an image model.
+type ImageModelMetadata struct {
+	QualityScore  float64 `yaml:"quality_score"`
+	ArtisticScore float64 `yaml:"artistic_score"` // Specific for image models
+	SpeedScore    float64 `yaml:"speed_score"`
+}
+
+// ImageRoutingStrategy defines the weighting for different image routing preferences.
+type ImageRoutingStrategy struct {
+	UseArtisticScore  bool    `yaml:"use_artistic_score"` // Flag to use artistic score instead of quality
+	QualityWeight     float64 `yaml:"quality_weight"`
+	SpeedWeight       float64 `yaml:"speed_weight"`
+	CostWeight        float64 `yaml:"cost_weight"`
+	ReliabilityWeight float64 `yaml:"reliability_weight"`
+}
+
+// --- END OF NEW STRUCTS ---
 
 // =================================================================================
 // Router Service

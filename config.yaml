@@ -49,6 +49,22 @@ models:
     #reliability_score: 0.92
     #cost_score: 0.6
 
+# --- ADD THIS NEW SECTION ---
+# ================================================================
+# Image Models Metadata
+# ================================================================
+image_models:
+  dall-e-3:
+    quality_score: 9.5  # How good is it at generating realistic, high-quality images?
+    artistic_score: 8.5 # How good is it at creative, artistic styles?
+    speed_score: 7.0 
+  imagen-2:
+    quality_score: 9.2
+    artistic_score: 8.8
+    speed_score: 8.0
+# ... (add other models like Midjourney here in the future)
+
+
 # ================================================================
 # Model Cost Data (REQUIRED for accurate profiling and routing)
 # ================================================================
@@ -130,3 +146,43 @@ strategies:
     cost_weight: 0.25
     latency_weight: 0.3
     reliability_weight: 0.15
+
+# ================================================================
+# Image Strategy Definitions (Production-Optimized v2)
+# ================================================================
+image_strategies:
+  # For realistic, high-quality photography-like images.
+  photorealistic:
+    quality_weight: 0.60   # maximize visual fidelity
+    speed_weight: 0.10
+    cost_weight: 0.10
+    reliability_weight: 0.20
+
+  # For creative, stylized, or imaginative outputs.
+  artistic:
+    use_artistic_score: true
+    quality_weight: 0.50   # still care about fidelity
+    speed_weight: 0.10
+    cost_weight: 0.05      # cost is less important here
+    reliability_weight: 0.35  # avoid broken results
+
+  # For fast, cheap previews (drafts, thumbnails).
+  fast_preview:
+    quality_weight: 0.15   # willing to sacrifice fidelity
+    speed_weight: 0.50     # prioritize responsiveness
+    cost_weight: 0.25
+    reliability_weight: 0.10
+
+  # For clear, accurate technical diagrams and flowcharts.
+  diagram:
+    quality_weight: 0.70   # prioritize clarity/accuracy
+    speed_weight: 0.10
+    cost_weight: 0.05
+    reliability_weight: 0.15
+
+  # Smart “catch-all” fallback when intent is unclear.
+  balanced:
+    quality_weight: 0.50   # safe middle ground
+    speed_weight: 0.15
+    cost_weight: 0.15
+    reliability_weight: 0.20

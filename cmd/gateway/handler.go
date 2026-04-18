@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dileep-u-k/llm-gateway/internal/api"
@@ -44,9 +45,11 @@ type GatewayHandler struct {
 	promptAnalyzer *llm.PromptAnalyzer
 	config         *AppConfig
 	rdb            *redis.Client
+	imageClients   map[string]llm.ImageClient
+	imageRouter    *llm.ImageRouter
 }
 
-func NewGatewayHandler(clients map[string]llm.LLMClient, profiler *llm.Profiler, router *llm.Router, ragService *llm.RAGService, intentAnalyzer *llm.IntentAnalyzer, toolManager *tools.ToolManager, promptAnalyzer *llm.PromptAnalyzer, config *AppConfig, rdb *redis.Client) *GatewayHandler {
+func NewGatewayHandler(clients map[string]llm.LLMClient, profiler *llm.Profiler, router *llm.Router, ragService *llm.RAGService, intentAnalyzer *llm.IntentAnalyzer, toolManager *tools.ToolManager, promptAnalyzer *llm.PromptAnalyzer, config *AppConfig, rdb *redis.Client, imageClients map[string]llm.ImageClient, imageRouter *llm.ImageRouter) *GatewayHandler {
 	return &GatewayHandler{
 		clients:        clients,
 		profiler:       profiler,
@@ -57,6 +60,8 @@ func NewGatewayHandler(clients map[string]llm.LLMClient, profiler *llm.Profiler,
 		promptAnalyzer: promptAnalyzer,
 		config:         config,
 		rdb:            rdb,
+		imageClients:   imageClients,
+		imageRouter:    imageRouter,
 	}
 }
 
@@ -70,57 +75,80 @@ func (h *GatewayHandler) HandleGeneration(c *gin.Context) {
 
 	log.Printf("--- New Request (User: %s, Convo: %s, Prompt: '%.30s...') ---", req.UserID, req.ConversationID, req.Prompt)
 
+	// --- THIS IS THE NEW CORE LOGIC: INTENT-DRIVEN ORCHESTRATION ---
+	// We analyze the user's intent FIRST to decide which path to take.
+	intent := h.intentAnalyzer.AnalyzeIntent(req.Prompt)
+	log.Printf("🔍 Intent Detected: %s", intent)
+
+	var finalResponse api.GenerationResponse
+	var err error
+
+	switch intent {
+	case llm.IntentImageCreation:
+		// If the user wants an image, we bypass the text-based session logic
+		// and route directly to the image client.
+		log.Println("🎨 Image creation intent detected. Routing to DALL-E...")
+		finalResponse, err = h.handleImageGeneration(c.Request.Context(), req)
+
+	case llm.IntentWeather, llm.IntentCalculator, llm.IntentNews:
+		// For tool use, we use a dedicated, powerful model.
+		finalResponse, err = h.handleToolLoop(c, req)
+
+	default: // Default is IntentRAG (text-based chat)
+		// For any text-based chat, we now engage the full session management and routing logic.
+		finalResponse, err = h.handleTextGeneration(c, req)
+	}
+	// --- END OF NEW CORE LOGIC ---
+
+	if err != nil {
+		// All helper handlers are responsible for handling their own errors and sending responses.
+		// If an error still reaches here, it's an unexpected internal error.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("An unexpected error occurred: %v", err)})
+		return
+	}
+
+	finalResponse.LatencyMS = time.Since(startTime).Milliseconds()
+	c.JSON(http.StatusOK, finalResponse)
+}
+
+// handleTextGeneration encapsulates all logic for text-based chat, including sessions and routing.
+func (h *GatewayHandler) handleTextGeneration(c *gin.Context, req api.GenerationRequest) (api.GenerationResponse, error) {
 	cacheKey := cacheversion.GenerateVersionedCacheKey("llmcache", req.Prompt)
 	if cachedVal, found := h.ragService.CheckCache(c.Request.Context(), cacheKey); found {
 		var cachedResp api.GenerationResponse
 		if json.Unmarshal([]byte(cachedVal), &cachedResp) == nil {
 			log.Println("✅ Cache HIT")
-			cachedResp.LatencyMS = time.Since(startTime).Milliseconds()
 			cachedResp.CacheStatus = "HIT"
-			c.JSON(http.StatusOK, cachedResp)
-			return
+			return cachedResp, nil
 		}
 	}
 	log.Println("⚠️ Cache MISS")
 
 	modelID, failoverInfo, err := h.determineModelID(c, &req)
 	if err != nil {
-		return // An error response has already been sent.
+		return api.GenerationResponse{}, err
 	}
 
-	intent := h.intentAnalyzer.AnalyzeIntent(req.Prompt)
-	log.Printf("🔍 Intent Detected: %s", intent)
-
-	var finalContent string
-	var usage api.Usage
-	var ragContextUsed bool
-
-	// This is the only change in this function: pass the history to the tool loop.
-	switch intent {
-	case llm.IntentWeather, llm.IntentCalculator, llm.IntentNews:
-		// --- THIS IS THE CHANGE ---
-		finalContent, usage, _, err = h.handleToolLoop(c, req)
-	default:
-		finalContent, usage, ragContextUsed, err = h.executeRAGAndGenerate(c, req, modelID)
-	}
-
+	finalContent, usage, ragContextUsed, err := h.executeRAGAndGenerate(c, req, modelID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return api.GenerationResponse{}, err
 	}
 
-	latency := time.Since(startTime)
-	h.profiler.UpdateProfileOnSuccess(c.Request.Context(), modelID, latency, usage)
+	h.profiler.UpdateProfileOnSuccess(c.Request.Context(), modelID, time.Since(time.Now()), usage)
 
 	finalResponse := api.GenerationResponse{
 		Content:        finalContent,
 		ModelUsed:      modelID,
 		Usage:          usage,
-		LatencyMS:      latency.Milliseconds(),
 		RAGContextUsed: ragContextUsed,
 		CacheStatus:    "MISS",
 		FailoverInfo:   failoverInfo,
 	}
+
+	//respBytes, _ := json.Marshal(finalResponse)
+	//h.ragService.SetCache(c.Request.Context(), cacheKey, string(respBytes))
+	//log.Println("✅ Response CACHED")
 
 	respBytes, err := json.Marshal(finalResponse)
 	if err != nil {
@@ -130,7 +158,41 @@ func (h *GatewayHandler) HandleGeneration(c *gin.Context) {
 		log.Println("✅ Response CACHED")
 	}
 
-	c.JSON(http.StatusOK, finalResponse)
+	return finalResponse, nil
+}
+
+// UPDATE your handleImageGeneration function
+func (h *GatewayHandler) handleImageGeneration(ctx context.Context, req api.GenerationRequest) (api.GenerationResponse, error) {
+	// 1. Use the intelligent image router to select the best model.
+	imageModel, err := h.imageRouter.SelectModel(ctx, req.Prompt, req.Config.ImagePreference)
+	if err != nil {
+		return api.GenerationResponse{}, fmt.Errorf("image router failed to select a model: %w", err)
+	}
+	log.Printf("🎨 Image creation intent detected. Router selected model: %s", imageModel)
+
+	// 2. Find the correct client for the selected model's provider.
+	var client llm.ImageClient // Use the interface type
+	if strings.HasPrefix(imageModel, "dall-e") {
+		client = h.imageClients["openai"]
+	} else if strings.HasPrefix(imageModel, "imagen") {
+		client = h.imageClients["google"]
+	}
+	// ... (add other providers here in the future)
+
+	if client == nil {
+		return api.GenerationResponse{}, fmt.Errorf("no active client for selected image model '%s'", imageModel)
+	}
+
+	imageURL, err := client.GenerateImage(ctx, req.Prompt, imageModel)
+	if err != nil {
+		return api.GenerationResponse{}, err
+	}
+
+	return api.GenerationResponse{
+		ImageURL:    imageURL,
+		ModelUsed:   imageModel,
+		CacheStatus: "MISS",
+	}, nil
 }
 
 // determineModelID encapsulates the complete, final logic with all bug fixes.
@@ -313,24 +375,21 @@ func (h *GatewayHandler) performRAGRetrieval(c *gin.Context, prompt string, thre
 	return prompt, false, nil
 }
 
-// --- THIS FUNCTION IS NOW UPDATED ---
-// It now accepts the full request to handle conversation history.
-func (h *GatewayHandler) handleToolLoop(c *gin.Context, req api.GenerationRequest) (string, api.Usage, string, error) {
+// The handleToolLoop function signature is updated to return api.GenerationResponse
+func (h *GatewayHandler) handleToolLoop(c *gin.Context, req api.GenerationRequest) (api.GenerationResponse, error) {
 	log.Println("Entering tool loop...")
 	const maxToolCalls = 5
 	var cumulativeUsage api.Usage
 	modelID := "gpt-4o"
 	client, ok := h.clients[modelID]
 	if !ok {
-		return "", api.Usage{}, "", fmt.Errorf("tool-use model '%s' is not available or enabled", modelID)
+		err := fmt.Errorf("tool-use model '%s' is not available or enabled", modelID)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return api.GenerationResponse{}, err
 	}
 
-	// --- THIS IS THE NEW LOGIC ---
-	// Construct the full conversation history for the tool-using agent.
-	// Convert the API message history to the internal LLM message type.
 	messages := convertAPIMessagesToLLMMessages(req.History)
 	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: req.Prompt})
-	// --- END OF NEW LOGIC ---
 
 	llmConfig := &llm.GenerationConfig{
 		Model:       modelID,
@@ -344,16 +403,25 @@ func (h *GatewayHandler) handleToolLoop(c *gin.Context, req api.GenerationReques
 		result, err := client.Generate(c.Request.Context(), messages, llmConfig, h.toolManager.GetDefinitions())
 		if err != nil {
 			h.profiler.UpdateProfileOnFailure(c.Request.Context(), modelID)
-			return "", api.Usage{}, "", fmt.Errorf("LLM generation failed during tool loop: %w", err)
+			err = fmt.Errorf("LLM generation failed during tool loop: %w", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return api.GenerationResponse{}, err
 		}
 		cumulativeUsage.Add(result.Usage)
+
 		if len(result.ToolCalls) == 0 {
 			log.Println("LLM provided final answer. Exiting tool loop.")
-			return result.Content, cumulativeUsage, modelID, nil
+			// At the end, return the full response struct.
+			return api.GenerationResponse{
+				Content:     result.Content,
+				ModelUsed:   modelID,
+				Usage:       cumulativeUsage,
+				CacheStatus: "MISS", // Tool use is never cached.
+			}, nil
 		}
+
 		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: result.Content, ToolCalls: result.ToolCalls})
 		for _, toolCall := range result.ToolCalls {
-			log.Printf("🛠️ Executing tool: %s (ID: %s) with args: %s", toolCall.Function.Name, toolCall.ID, toolCall.Function.Arguments)
 			toolResult, err := h.toolManager.Execute(toolCall.Function.Name, toolCall.Function.Arguments)
 			if err != nil {
 				toolResult = fmt.Sprintf("Error executing tool %s: %v", toolCall.Function.Name, err)
@@ -361,7 +429,10 @@ func (h *GatewayHandler) handleToolLoop(c *gin.Context, req api.GenerationReques
 			messages = append(messages, llm.Message{Role: llm.RoleTool, ToolCallID: toolCall.ID, Content: toolResult})
 		}
 	}
-	return "", api.Usage{}, "", errors.New("exceeded maximum number of tool calls")
+
+	err := errors.New("exceeded maximum number of tool calls")
+	c.JSON(http.StatusRequestTimeout, gin.H{"error": err.Error()})
+	return api.GenerationResponse{}, err
 }
 
 // --- NEW HELPER FUNCTION ---
