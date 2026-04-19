@@ -273,6 +273,63 @@ func TestHandleGenerationAppliesWorkspaceGovernance(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequestForPlatformRejectsInvalidAsyncOptions(t *testing.T) {
+	handler, cleanup := newTestHandler(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/generate", bytes.NewBufferString(`{}`))
+	c.Request = req
+	principal := &platform.Principal{ID: "user-1", Role: "admin", Mode: "open"}
+
+	_, _, _, _, err := handler.normalizeRequestForPlatform(context.Background(), c, principal, api.GenerationRequest{
+		Prompt:                "async callback test",
+		SyncOrAsyncPreference: "eventual",
+	})
+	if err == nil || !strings.Contains(err.Error(), "sync_or_async_preference") {
+		t.Fatalf("expected sync preference validation error, got %v", err)
+	}
+
+	_, _, _, _, err = handler.normalizeRequestForPlatform(context.Background(), c, principal, api.GenerationRequest{
+		Prompt:                "async callback test",
+		SyncOrAsyncPreference: "sync",
+		CallbackURL:           "https://example.com/hook",
+	})
+	if err == nil || !strings.Contains(err.Error(), "only supported for async") {
+		t.Fatalf("expected callback async-only validation error, got %v", err)
+	}
+
+	_, _, _, _, err = handler.normalizeRequestForPlatform(context.Background(), c, principal, api.GenerationRequest{
+		Prompt:                "async callback test",
+		SyncOrAsyncPreference: "async",
+		CallbackURL:           "ftp://example.com/hook",
+	})
+	if err == nil || !strings.Contains(err.Error(), "http or https") {
+		t.Fatalf("expected callback scheme validation error, got %v", err)
+	}
+}
+
+func TestServeStaticAssetSupportsPrefixedPath(t *testing.T) {
+	handler, cleanup := newTestHandler(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.GET("/ui/*filepath", handler.ServeStaticAsset)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/styles.css", nil)
+	resp := httptest.NewRecorder()
+	engine.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected static asset to resolve, got status %d body=%s", resp.Code, resp.Body.String())
+	}
+	if ct := resp.Header().Get("Content-Type"); !strings.Contains(ct, "text/css") {
+		t.Fatalf("expected css content type, got %s", ct)
+	}
+}
+
 func newTestHandler(t *testing.T) (*GatewayHandler, func()) {
 	t.Helper()
 	mr := miniredis.RunT(t)
