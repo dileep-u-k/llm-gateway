@@ -8,13 +8,9 @@ This project is an enterprise-grade API gateway designed to intelligently route,
 
 ---
 
-## Architecture Diagram
+## Architecture Overview
 
-*(This is a placeholder for your final Phase 5 diagram. After deploying to Kubernetes and setting up monitoring, you will replace this with a diagram showing the complete, scalable cloud architecture.)*
-
-
-
-The gateway sits between the user and multiple LLM providers. It enriches prompts with a RAG pipeline, makes intelligent routing decisions based on real-time performance data, and manages conversational state, providing a single, unified API endpoint for any client application.
+The gateway sits between the user and multiple LLM providers. It enriches prompts with a RAG pipeline, makes intelligent routing decisions based on real-time performance data, and manages conversational state, providing a single, unified API endpoint for client applications.
 
 ---
 
@@ -55,7 +51,7 @@ The gateway sits between the user and multiple LLM providers. It enriches prompt
 
 ---
 
-### ## 🏛️ Architectural Principles
+## 🏛️ Architectural Principles
 
 This project was not just built to be functional, but was architected around a set of core principles essential for modern, cloud-native AI systems:
 
@@ -66,7 +62,7 @@ This project was not just built to be functional, but was architected around a s
 
 ---
 
-### ## 🧠 Key Learnings & Challenges
+## 🧠 Key Learnings & Challenges
 
 Building this platform provided deep insights into the practical challenges of operating AI systems at scale.
 
@@ -76,13 +72,12 @@ Building this platform provided deep insights into the practical challenges of o
 
 ---
 
-##  📊 (Phase 5) Grafana Dashboard
+## 📊 Observability
 
-*(This is a placeholder for your Phase 5 deliverable. This will be the most impactful visual in your README.)*
+For monitoring and production operations, use:
 
-**This Grafana dashboard will display the real-time performance of the gateway, tracking request latency, cost-per-model, and the effectiveness of the routing and caching engines.**
-
-
+- `GET /api/v1/metrics` for built-in runtime JSON counters and percentiles.
+- Prometheus and Grafana (Phase 5 stack) for historical dashboards and alerting.
 
 ---
 
@@ -105,13 +100,13 @@ Building this platform provided deep insights into the practical challenges of o
 
 2.  **Clone the repository:**
     ```sh
-    git clone [https://github.com/YOUR_USERNAME/llm-gateway.git](https://github.com/YOUR_USERNAME/llm-gateway.git)
+    git clone https://github.com/dileep-u-k/llm-gateway.git
     cd llm-gateway
     ```
 
 3.  **Set up your environment:**
-    * Rename `.env.example` (if you have one) to `.env`.
-    * Fill in your secret API keys in the `.env` file.
+    * Copy `.env.example` to `.env`.
+    * Fill in provider credentials and runtime configuration (for example: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `REDIS_ADDR`, and optional `PLATFORM_*` values).
 
 4.  **Run the application:**
     ```sh
@@ -143,6 +138,16 @@ This project was built to demonstrate a production-grade, scalable, and resilien
 - **Integrate More Providers & Tools:** Leverage the gateway's modular design to add support for other leading models and enterprise connectors.
 - **Persistent Artifact Storage:** Replace demo-friendly local artifact storage with cloud object storage and lifecycle policies.
 - **Advanced Deployment Strategies:** Introduce service-mesh routing, canaries, and region-aware failover on top of the new Phase 6 split runtime.
+
+---
+
+## 📚 Documentation Index
+
+- [Phase 6 Platform Completion](docs/phase-6-platform.md)
+- [Security Model](docs/security-model.md)
+- [Kubernetes Deployment Guide](docs/deployment-kubernetes.md)
+- [Runbooks](docs/runbooks.md)
+- [Demo Guide](docs/demo-guide.md)
 
 ---
 

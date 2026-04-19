@@ -1,6 +1,6 @@
 # Kubernetes Deployment Guide
 
-The manifests in [`deploy/kubernetes`](/Users/dileepuk/Desktop/Developer/llm-gateway/deploy/kubernetes) split the platform into API and worker deployments.
+The manifests in [`deploy/kubernetes`](../deploy/kubernetes) split the platform into API and worker deployments.
 
 ## Apply order
 

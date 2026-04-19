@@ -6,7 +6,7 @@ Phase 6 turns the existing orchestration engine into a productized platform laye
 
 - End-user surface served directly by the gateway at `/`
 - Admin and developer control plane served at `/admin`
-- Tenant/workspace-aware governance with policy bundles from [`platform.yaml`](/Users/dileepuk/Desktop/Developer/llm-gateway/platform.yaml)
+- Tenant/workspace-aware governance with policy bundles from [`platform.yaml`](../platform.yaml)
 - RBAC-capable auth with open local mode or token mode via `PLATFORM_*_TOKEN`
 - Audit logging for generation, policy, and artifact actions
 - Signed artifact access for uploaded and generated files

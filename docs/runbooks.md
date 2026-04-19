@@ -9,7 +9,7 @@
 
 ## Async backlog grows
 
-1. Scale the worker deployment from [`deploy/kubernetes/worker-deployment.yaml`](/Users/dileepuk/Desktop/Developer/llm-gateway/deploy/kubernetes/worker-deployment.yaml).
+1. Scale the worker deployment from [`deploy/kubernetes/worker-deployment.yaml`](../deploy/kubernetes/worker-deployment.yaml).
 2. Inspect `job_state_distribution` and retry counters in metrics.
 3. Review recent failed jobs in the admin control plane.
 
