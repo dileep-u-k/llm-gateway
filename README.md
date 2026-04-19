@@ -8,13 +8,16 @@ This project is an enterprise-grade API gateway designed to intelligently route,
 
 ---
 
-## Architecture Diagram
+## Architecture Overview
 
-*(This is a placeholder for your final Phase 5 diagram. After deploying to Kubernetes and setting up monitoring, you will replace this with a diagram showing the complete, scalable cloud architecture.)*
+The platform is intentionally split into a control-plane style API surface and a worker-capable execution runtime:
 
+1. **Gateway API (`cmd/gateway`)**: Auth, tenancy/workspace normalization, policy enforcement, request planning, model routing, synchronous execution, and platform/admin APIs.
+2. **Execution Runtime (`internal/ops`, `internal/llm`)**: Multimodal planning, staged execution, async jobs, retries, checkpoints, and artifact registration.
+3. **Data Plane Dependencies**: Redis (sessions, caching, orchestration metadata, policy overrides), Pinecone (RAG retrieval/index), provider APIs (OpenAI/Anthropic/Gemini/Mistral), and optional external tools.
+4. **Product Surface (`/` and `/admin`)**: End-user multimodal workspace and operator control plane over the same unified API.
 
-
-The gateway sits between the user and multiple LLM providers. It enriches prompts with a RAG pipeline, makes intelligent routing decisions based on real-time performance data, and manages conversational state, providing a single, unified API endpoint for any client application.
+This keeps client integrations simple (one API) while preserving production requirements like failover, observability, governance, and replay/evaluation workflows.
 
 ---
 
@@ -76,11 +79,14 @@ Building this platform provided deep insights into the practical challenges of o
 
 ---
 
-##  📊 (Phase 5) Grafana Dashboard
+##  📊 Runtime Metrics & Dashboards
 
-*(This is a placeholder for your Phase 5 deliverable. This will be the most impactful visual in your README.)*
+The gateway exposes:
 
-**This Grafana dashboard will display the real-time performance of the gateway, tracking request latency, cost-per-model, and the effectiveness of the routing and caching engines.**
+* `GET /api/v1/metrics` for JSON snapshots of request rates, latency, cache behavior, health transitions, failovers, and force-scope usage.
+* `GET /api/v1/dashboards` for lightweight dashboard-friendly aggregates derived from the same runtime telemetry.
+
+For cluster deployments, these endpoints can be scraped/bridged into Prometheus/Grafana while preserving this repository’s built-in local observability flow.
 
 
 
@@ -105,7 +111,7 @@ Building this platform provided deep insights into the practical challenges of o
 
 2.  **Clone the repository:**
     ```sh
-    git clone [https://github.com/YOUR_USERNAME/llm-gateway.git](https://github.com/YOUR_USERNAME/llm-gateway.git)
+    git clone https://github.com/dileep-u-k/llm-gateway.git
     cd llm-gateway
     ```
 

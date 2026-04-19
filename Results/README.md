@@ -1,6 +1,6 @@
 # Results
 
-This folder captures the project status through Phase 2.
+This folder preserves the **historical Phase 0–2 milestone artifacts** that were produced earlier in the project lifecycle.
 
 Files:
 
@@ -10,12 +10,12 @@ Files:
 * `DEMO_AND_TEST_EXAMPLES.md`
   Copy-pasteable demo requests and testing examples for the current gateway implementation.
 
-Current state:
+Historical state captured in these files (at the time they were written):
 
 * Phase 0: completed
 * Phase 1: completed
 * Phase 2: completed
-* Phase 3+: not implemented yet
+* Phase 3+: not implemented yet (at that milestone checkpoint)
 
 Verification status at the time this documentation was added:
 

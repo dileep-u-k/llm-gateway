@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +38,31 @@ func (h *GatewayHandler) normalizeRequestForPlatform(ctx context.Context, c *gin
 	req.TenantID = firstNonEmpty(req.TenantID, c.GetHeader("X-Tenant-ID"))
 	req.WorkspaceID = firstNonEmpty(req.WorkspaceID, c.GetHeader("X-Workspace-ID"))
 	req.UserID = firstNonEmpty(req.UserID, c.GetHeader("X-User-ID"), principal.ID)
+	req.TenantID = strings.TrimSpace(req.TenantID)
+	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
+	req.UserID = strings.TrimSpace(req.UserID)
+	req.ConversationID = strings.TrimSpace(req.ConversationID)
+	req.SyncOrAsyncPreference = strings.TrimSpace(strings.ToLower(req.SyncOrAsyncPreference))
+	req.CallbackURL = strings.TrimSpace(req.CallbackURL)
+
+	if req.SyncOrAsyncPreference != "" && req.SyncOrAsyncPreference != "sync" && req.SyncOrAsyncPreference != "async" {
+		return req, platform.WorkspaceContext{}, nil, "", fmt.Errorf("sync_or_async_preference must be one of: sync, async")
+	}
+	if req.CallbackURL != "" {
+		if req.SyncOrAsyncPreference == "" {
+			return req, platform.WorkspaceContext{}, nil, "", fmt.Errorf("callback_url requires sync_or_async_preference=async")
+		}
+		if req.SyncOrAsyncPreference != "async" {
+			return req, platform.WorkspaceContext{}, nil, "", fmt.Errorf("callback_url is only supported for async requests")
+		}
+		callbackURL, parseErr := url.ParseRequestURI(req.CallbackURL)
+		if parseErr != nil || callbackURL == nil || callbackURL.Host == "" {
+			return req, platform.WorkspaceContext{}, nil, "", fmt.Errorf("callback_url must be a valid absolute URL")
+		}
+		if callbackURL.Scheme != "https" && callbackURL.Scheme != "http" {
+			return req, platform.WorkspaceContext{}, nil, "", fmt.Errorf("callback_url must use http or https")
+		}
+	}
 
 	if h.policyEngine == nil {
 		return req, platform.WorkspaceContext{}, nil, "", nil
@@ -178,6 +204,7 @@ func (h *GatewayHandler) ServeAdminUI(c *gin.Context) {
 
 func (h *GatewayHandler) ServeStaticAsset(c *gin.Context) {
 	path := filepath.Clean(c.Param("filepath"))
+	path = strings.TrimPrefix(path, "/")
 	if path == "." || strings.Contains(path, "..") {
 		c.Status(http.StatusNotFound)
 		return
