@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,12 @@ import (
 
 	"github.com/joho/godotenv"
 )
+
+type semanticSection struct {
+	Title string
+	Path  string
+	Body  string
+}
 
 // =================================================================================
 // Configuration
@@ -88,6 +95,8 @@ type Ingestor struct {
 	config     *Config
 	httpClient *http.Client
 	ragService *llm.RAGService
+	mu         sync.Mutex
+	sourceRefs map[string]string
 }
 
 // NewIngestor is simpler without Redis dependencies.
@@ -96,6 +105,7 @@ func NewIngestor(cfg *Config, ragService *llm.RAGService) (*Ingestor, error) {
 		config:     cfg,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 		ragService: ragService,
+		sourceRefs: make(map[string]string),
 	}, nil
 }
 
@@ -142,6 +152,9 @@ func (i *Ingestor) Run() error {
 		}(topic)
 	}
 	wg.Wait()
+	if err := i.publishCorpusVersion(); err != nil {
+		return fmt.Errorf("failed to publish corpus version: %w", err)
+	}
 	log.Println("✅ Data ingestion complete.")
 	return nil
 }
@@ -164,7 +177,7 @@ func (i *Ingestor) discoverTopics() ([]string, error) {
 func (i *Ingestor) ingestTopicToPinecone(topic string) error {
 	topicPath := filepath.Join(i.config.SourceDataDir, topic)
 	log.Printf("📚 Processing RAG topic for Pinecone: '%s'", topic)
-	allChunks, err := i.extractChunksFromPath(topicPath)
+	allChunks, err := i.extractChunksFromPath(topicPath, topic)
 	if err != nil {
 		return fmt.Errorf("error extracting chunks for topic %s: %w", topic, err)
 	}
@@ -185,12 +198,18 @@ func (i *Ingestor) ingestTopicToPinecone(topic string) error {
 		log.Printf("  -> Processing batch %d of %d for topic '%s'", batchNum, totalBatches, topic)
 
 		// CORRECTED: Use the single, consistent RAGService for embeddings.
-		vectors, err := i.ragService.GenerateVectorsForChunks(context.Background(), chunkBatch, topic)
+		vectors, err := i.ragService.GenerateVectorsForChunks(context.Background(), chunkBatch)
 		if err != nil {
 			return fmt.Errorf("failed to generate embeddings for batch %d of topic %s: %w", batchNum, topic, err)
 		}
 		if err := i.upsertToPinecone(vectors); err != nil {
 			return fmt.Errorf("failed to upsert vectors for batch %d of topic %s: %w", batchNum, topic, err)
+		}
+		for _, chunk := range chunkBatch {
+			if err := i.ragService.StoreSourceVersion(context.Background(), chunk.Source, chunk.Version); err != nil {
+				log.Printf("⚠️ Failed to store source version for %s: %v", chunk.Source, err)
+			}
+			i.recordSourceVersion(chunk.Source, chunk.Version)
 		}
 	}
 	return nil
@@ -202,14 +221,14 @@ func (i *Ingestor) ingestTopicToPinecone(topic string) error {
 // (These functions are kept from the previous version as they are still needed)
 
 // extractChunksFromPath walks a directory and extracts all text chunks from valid files.
-func (i *Ingestor) extractChunksFromPath(rootPath string) ([]string, error) {
-	var chunks []string
+func (i *Ingestor) extractChunksFromPath(rootPath, topic string) ([]llm.DocumentChunk, error) {
+	var chunks []llm.DocumentChunk
 	err := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if !info.IsDir() {
-			fileChunks, err := extractChunksFromFile(path)
+			fileChunks, err := extractChunksFromFile(path, topic)
 			if err != nil {
 				log.Printf("⚠️  Could not extract chunks from file %s: %v", path, err)
 				return nil
@@ -222,7 +241,7 @@ func (i *Ingestor) extractChunksFromPath(rootPath string) ([]string, error) {
 }
 
 // extractChunksFromFile uses a hybrid strategy for the most robust chunking.
-func extractChunksFromFile(path string) ([]string, error) {
+func extractChunksFromFile(path, topic string) ([]llm.DocumentChunk, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		// Only process supported files, otherwise skip.
@@ -233,58 +252,202 @@ func extractChunksFromFile(path string) ([]string, error) {
 		return nil, err
 	}
 
-	finalChunks := []string{}
+	fileInfo, statErr := os.Stat(path)
+	if statErr != nil {
+		return nil, statErr
+	}
 
-	// --- Pass 1: Semantic Chunking ---
-	// First, split the document by major headings to respect semantic boundaries.
-	sections := strings.Split(string(content), "\n# ")
-
-	// --- Pass 2: Fixed-Size Chunking (if needed) ---
+	finalChunks := []llm.DocumentChunk{}
+	fileVersion := llm.GenerateCacheKey(string(content))
+	sourceID := filepath.ToSlash(path)
+	documentTitle := baseDocumentTitle(path)
+	sections := hierarchicalSections(string(content), documentTitle)
 	const targetTokensPerChunk = 500
-	const overlapTokens = 50
+	ingestedAt := time.Now().UTC().Format(time.RFC3339)
 
-	for i, section := range sections {
-		// Add the heading back to all sections after the first one.
-		if i > 0 {
-			section = "# " + section
-		}
-
-		// If the semantic section is already a good size, just add it.
-		if len(section)/4 <= targetTokensPerChunk {
-			if strings.TrimSpace(section) != "" {
-				finalChunks = append(finalChunks, strings.TrimSpace(section))
+	for _, section := range sections {
+		for _, chunkText := range splitSectionIntoChunks(section, targetTokensPerChunk) {
+			chunkText = strings.TrimSpace(chunkText)
+			if chunkText == "" {
+				continue
 			}
-			continue
-		}
-
-		// If the section is too long, apply fixed-size chunking to it.
-		var currentChunk strings.Builder
-		lines := strings.Split(section, "\n")
-
-		for _, line := range lines {
-			lineTokenCount := len(line) / 4
-			currentChunkTokenCount := len(currentChunk.String()) / 4
-
-			if currentChunkTokenCount+lineTokenCount > targetTokensPerChunk && currentChunk.Len() > 0 {
-				finalChunks = append(finalChunks, currentChunk.String())
-
-				lastChunk := currentChunk.String()
-				overlapStart := len(lastChunk) - (overlapTokens * 4)
-				if overlapStart < 0 {
-					overlapStart = 0
-				}
-
-				currentChunk.Reset()
-				currentChunk.WriteString(lastChunk[overlapStart:])
-			}
-			currentChunk.WriteString(line + "\n")
-		}
-		if currentChunk.Len() > 0 {
-			finalChunks = append(finalChunks, currentChunk.String())
+			finalChunks = append(finalChunks, llm.DocumentChunk{
+				Text:        chunkText,
+				Topic:       topic,
+				Source:      sourceID,
+				DocumentID:  sourceID,
+				DocTitle:    documentTitle,
+				Section:     section.Title,
+				SectionPath: section.Path,
+				Version:     fileVersion,
+				Timestamp:   fileInfo.ModTime().UTC().Format(time.RFC3339),
+				IngestedAt:  ingestedAt,
+				ChunkIndex:  len(finalChunks) + 1,
+				ContentHash: llm.GenerateCacheKey(chunkText),
+			})
 		}
 	}
 
 	return finalChunks, nil
+}
+
+func extractSectionTitle(section, fallback string) string {
+	lines := strings.Split(strings.TrimSpace(section), "\n")
+	if len(lines) == 0 {
+		return fallback
+	}
+	title := strings.TrimSpace(strings.TrimPrefix(lines[0], "#"))
+	if title == "" {
+		return fallback
+	}
+	return title
+}
+
+func baseDocumentTitle(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+func hierarchicalSections(content, fallbackTitle string) []semanticSection {
+	lines := strings.Split(content, "\n")
+	headings := []string{fallbackTitle}
+	currentTitle := fallbackTitle
+	var currentBody strings.Builder
+	var sections []semanticSection
+
+	flush := func() {
+		body := strings.TrimSpace(currentBody.String())
+		if body == "" {
+			currentBody.Reset()
+			return
+		}
+		sections = append(sections, semanticSection{
+			Title: currentTitle,
+			Path:  strings.Join(trimHeadingStack(headings), " > "),
+			Body:  body,
+		})
+		currentBody.Reset()
+	}
+
+	for _, line := range lines {
+		level, heading, ok := markdownHeading(line)
+		if ok {
+			flush()
+			if level < 1 {
+				level = 1
+			}
+			for len(headings) >= level+1 {
+				headings = headings[:len(headings)-1]
+			}
+			headings = append(headings, heading)
+			currentTitle = heading
+			continue
+		}
+		currentBody.WriteString(line)
+		currentBody.WriteString("\n")
+	}
+	flush()
+	if len(sections) == 0 {
+		return []semanticSection{{Title: fallbackTitle, Path: fallbackTitle, Body: strings.TrimSpace(content)}}
+	}
+	return sections
+}
+
+func markdownHeading(line string) (int, string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "#") {
+		return 0, "", false
+	}
+	level := 0
+	for level < len(trimmed) && trimmed[level] == '#' {
+		level++
+	}
+	heading := strings.TrimSpace(trimmed[level:])
+	if heading == "" {
+		return 0, "", false
+	}
+	return level, heading, true
+}
+
+func trimHeadingStack(values []string) []string {
+	var trimmed []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			trimmed = append(trimmed, value)
+		}
+	}
+	return trimmed
+}
+
+func splitSectionIntoChunks(section semanticSection, targetTokensPerChunk int) []string {
+	body := strings.TrimSpace(section.Body)
+	if body == "" {
+		return nil
+	}
+	if len(body)/4 <= targetTokensPerChunk {
+		return []string{body}
+	}
+	paragraphs := strings.Split(body, "\n\n")
+	var chunks []string
+	var current strings.Builder
+	var lastParagraph string
+
+	flush := func() {
+		text := strings.TrimSpace(current.String())
+		if text != "" {
+			chunks = append(chunks, text)
+		}
+		current.Reset()
+		if lastParagraph != "" {
+			current.WriteString(lastParagraph)
+			current.WriteString("\n\n")
+		}
+	}
+
+	for _, paragraph := range paragraphs {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" {
+			continue
+		}
+		candidate := current.String()
+		if len(candidate+paragraph)/4 > targetTokensPerChunk && current.Len() > 0 {
+			flush()
+		}
+		if current.Len() > 0 {
+			current.WriteString("\n\n")
+		}
+		current.WriteString(paragraph)
+		lastParagraph = paragraph
+	}
+	if strings.TrimSpace(current.String()) != "" {
+		chunks = append(chunks, strings.TrimSpace(current.String()))
+	}
+	return chunks
+}
+
+func (i *Ingestor) recordSourceVersion(source, version string) {
+	if source == "" || version == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.sourceRefs[source] = version
+}
+
+func (i *Ingestor) publishCorpusVersion() error {
+	i.mu.Lock()
+	refs := make([]string, 0, len(i.sourceRefs))
+	for source, version := range i.sourceRefs {
+		refs = append(refs, source+"@"+version)
+	}
+	i.mu.Unlock()
+
+	if len(refs) == 0 {
+		return nil
+	}
+	sort.Strings(refs)
+	return i.ragService.SetCorpusVersion(context.Background(), llm.GenerateCacheKey(strings.Join(refs, "|")))
 }
 
 // upsertToPinecone sends batches of vectors to the Pinecone API.

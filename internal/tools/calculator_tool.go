@@ -4,6 +4,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // --- Calculator Tool Implementation ---
@@ -50,6 +51,20 @@ func (ct *CalculatorTool) Definition() Tool {
 			Required: []string{"operand1", "operator", "operand2"},
 		},
 	)
+}
+
+func (ct *CalculatorTool) Specification() ToolSpecification {
+	return ToolSpecification{
+		Name:            "calculate",
+		Capability:      "utility_transform",
+		InputSchema:     ct.Definition().Function.Parameters,
+		OutputSchema:    JSONSchema{Type: "object"},
+		Timeout:         3 * time.Second,
+		RetryPolicy:     RetryPolicy{MaxAttempts: 1},
+		PermissionScope: "gateway:calculator",
+		TrustLevel:      TrustLevelHigh,
+		AsyncSuitable:   false,
+	}
 }
 
 // Execute runs the tool's actual logic. It takes the structured arguments

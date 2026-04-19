@@ -1,4 +1,3 @@
-// In file: internal/llm/profiler.go
 package llm
 
 import (
@@ -9,37 +8,29 @@ import (
 	"time"
 
 	"github.com/dileep-u-k/llm-gateway/internal/api"
+	"github.com/dileep-u-k/llm-gateway/internal/observability"
 	"github.com/redis/go-redis/v9"
 )
 
-// =================================================================================
-// Ultra Production-Ready Model Profiler
-// =================================================================================
-// Key Features:
-// 1. **Concurrency-Safe Initialization** → HSetNX prevents race conditions.
-// 2. **Atomic Updates** → Pipelines/transactions ensure consistency.
-// 3. **Resilient Parsing** → Gracefully handles missing/corrupted Redis data.
-// 4. **Strong Logging** → CRITICAL, WARNING, INFO messages guide ops/debugging.
-// 5. **Cost Tracking** → Monthly cost rollups with automatic expiry.
-// =================================================================================
-
-// ModelProfile tracks performance, cost, and reliability metrics for an LLM.
 type ModelProfile struct {
-	ModelID            string    `json:"model_id" redis:"model_id"`
-	AvgLatencyMS       int64     `json:"avg_latency_ms" redis:"avg_latency_ms"`
-	CostPerInputToken  float64   `json:"cost_per_input_token" redis:"cost_per_input_token"`
-	CostPerOutputToken float64   `json:"cost_per_output_token" redis:"cost_per_output_token"`
-	Status             string    `json:"status" redis:"status"`
-	ErrorRate          float64   `json:"error_rate" redis:"error_rate"`
-	TotalSuccesses     int64     `json:"total_successes" redis:"total_successes"`
-	TotalFailures      int64     `json:"total_failures" redis:"total_failures"`
-	TotalInputTokens   int64     `json:"total_input_tokens" redis:"total_input_tokens"`
-	TotalOutputTokens  int64     `json:"total_output_tokens" redis:"total_output_tokens"`
-	LastHealthCheck    time.Time `json:"last_health_check" redis:"last_health_check"`
-	CostSpentMonthly   float64   `json:"cost_spent_monthly"`
+	ModelID             string    `json:"model_id" redis:"model_id"`
+	Provider            string    `json:"provider" redis:"provider"`
+	AvgLatencyMS        int64     `json:"avg_latency_ms" redis:"avg_latency_ms"`
+	CostPerInputToken   float64   `json:"cost_per_input_token" redis:"cost_per_input_token"`
+	CostPerOutputToken  float64   `json:"cost_per_output_token" redis:"cost_per_output_token"`
+	Status              string    `json:"status" redis:"status"`
+	ErrorRate           float64   `json:"error_rate" redis:"error_rate"`
+	TotalSuccesses      int64     `json:"total_successes" redis:"total_successes"`
+	TotalFailures       int64     `json:"total_failures" redis:"total_failures"`
+	TotalInputTokens    int64     `json:"total_input_tokens" redis:"total_input_tokens"`
+	TotalOutputTokens   int64     `json:"total_output_tokens" redis:"total_output_tokens"`
+	LastHealthCheck     time.Time `json:"last_health_check" redis:"last_health_check"`
+	CostSpentMonthly    float64   `json:"cost_spent_monthly"`
+	ConsecutiveFailures int64     `json:"consecutive_failures" redis:"consecutive_failures"`
+	CircuitOpenUntil    time.Time `json:"circuit_open_until" redis:"circuit_open_until"`
+	LastError           string    `json:"last_error" redis:"last_error"`
 }
 
-// modelCosts holds input/output token cost per model.
 var modelCosts = make(map[string]map[string]float64)
 
 func InitializeModelCosts(costs map[string]map[string]float64) {
@@ -50,21 +41,42 @@ func InitializeModelCosts(costs map[string]map[string]float64) {
 	}
 }
 
-type Profiler struct {
-	rdb *redis.Client
+func EstimateRequestCost(modelID string, usage api.Usage, artifactCount int) float64 {
+	costs, ok := modelCosts[modelID]
+	if !ok {
+		return 0
+	}
+	cost := float64(usage.PromptTokens)*costs["input"] + float64(usage.CompletionTokens)*costs["output"]
+	if cost == 0 && artifactCount > 0 {
+		cost = costs["input"] * float64(artifactCount)
+	}
+	if cost < 0 {
+		return 0
+	}
+	return cost
 }
 
-func NewProfiler(rdb *redis.Client) *Profiler {
-	return &Profiler{rdb: rdb}
+type Profiler struct {
+	rdb    *redis.Client
+	config *RouterConfig
+}
+
+func NewProfiler(rdb *redis.Client, config *RouterConfig) *Profiler {
+	return &Profiler{rdb: rdb, config: config}
 }
 
 func (p *Profiler) getProfileKey(modelID string) string {
 	return fmt.Sprintf("profile:%s", modelID)
 }
 
-// ================================================================================
-// GetProfile: Safe, resilient retrieval of a model profile.
-// ================================================================================
+func (p *Profiler) getProviderHealthKey(provider string) string {
+	return fmt.Sprintf("provider_health:%s", provider)
+}
+
+func (p *Profiler) getCapabilityHealthKey(provider, modelID string, capability Capability) string {
+	return fmt.Sprintf("capability_health:%s:%s:%s", provider, modelID, capability)
+}
+
 func (p *Profiler) GetProfile(ctx context.Context, modelID string) (*ModelProfile, error) {
 	key := p.getProfileKey(modelID)
 	profileData, err := p.rdb.HGetAll(ctx, key).Result()
@@ -76,34 +88,27 @@ func (p *Profiler) GetProfile(ctx context.Context, modelID string) (*ModelProfil
 		return p.createDefaultProfile(ctx, modelID)
 	}
 
-	// Safe parsing with fallbacks
-	profile := &ModelProfile{ModelID: modelID}
-	if v, err := strconv.ParseInt(profileData["avg_latency_ms"], 10, 64); err == nil {
-		profile.AvgLatencyMS = v
-	} else {
-		log.Printf("[WARN] Could not parse avg_latency_ms for %s, defaulting to 2000ms", modelID)
-		profile.AvgLatencyMS = 2000
-	}
-	profile.CostPerInputToken, _ = strconv.ParseFloat(profileData["cost_per_input_token"], 64)
-	profile.CostPerOutputToken, _ = strconv.ParseFloat(profileData["cost_per_output_token"], 64)
-	profile.Status = profileData["status"]
-	profile.ErrorRate, _ = strconv.ParseFloat(profileData["error_rate"], 64)
-	profile.TotalSuccesses, _ = strconv.ParseInt(profileData["total_successes"], 10, 64)
-	profile.TotalFailures, _ = strconv.ParseInt(profileData["total_failures"], 10, 64)
-	profile.TotalInputTokens, _ = strconv.ParseInt(profileData["total_input_tokens"], 10, 64)
-	profile.TotalOutputTokens, _ = strconv.ParseInt(profileData["total_output_tokens"], 10, 64)
-	profile.LastHealthCheck, _ = time.Parse(time.RFC3339Nano, profileData["last_health_check"])
+	profile := &ModelProfile{ModelID: modelID, Provider: ProviderForModel(modelID)}
+	profile.AvgLatencyMS = parseInt64(profileData["avg_latency_ms"], 2000)
+	profile.CostPerInputToken = parseFloat64(profileData["cost_per_input_token"], 0)
+	profile.CostPerOutputToken = parseFloat64(profileData["cost_per_output_token"], 0)
+	profile.Status = string(normalizeHealthStatus(profileData["status"]))
+	profile.ErrorRate = parseFloat64(profileData["error_rate"], 0)
+	profile.TotalSuccesses = parseInt64(profileData["total_successes"], 1)
+	profile.TotalFailures = parseInt64(profileData["total_failures"], 0)
+	profile.TotalInputTokens = parseInt64(profileData["total_input_tokens"], 0)
+	profile.TotalOutputTokens = parseInt64(profileData["total_output_tokens"], 0)
+	profile.LastHealthCheck = parseTime(profileData["last_health_check"])
+	profile.ConsecutiveFailures = parseInt64(profileData["consecutive_failures"], 0)
+	profile.CircuitOpenUntil = parseTime(profileData["circuit_open_until"])
+	profile.LastError = profileData["last_error"]
 
-	// Monthly spend tracking
 	costKey := fmt.Sprintf("cost:%s:%s", modelID, time.Now().Format("2006-01"))
 	profile.CostSpentMonthly, _ = p.rdb.Get(ctx, costKey).Float64()
 
 	return profile, nil
 }
 
-// ================================================================================
-// createDefaultProfile: Concurrency-safe profile creation.
-// ================================================================================
 func (p *Profiler) createDefaultProfile(ctx context.Context, modelID string) (*ModelProfile, error) {
 	costs, ok := modelCosts[modelID]
 	if !ok {
@@ -113,19 +118,18 @@ func (p *Profiler) createDefaultProfile(ctx context.Context, modelID string) (*M
 
 	profile := &ModelProfile{
 		ModelID:            modelID,
+		Provider:           ProviderForModel(modelID),
 		AvgLatencyMS:       2000,
 		CostPerInputToken:  costs["input"],
 		CostPerOutputToken: costs["output"],
-		Status:             "online",
+		Status:             string(HealthStatusOnline),
 		TotalSuccesses:     1,
 		TotalFailures:      0,
 		ErrorRate:          0.0,
-		LastHealthCheck:    time.Now(),
+		LastHealthCheck:    time.Now().UTC(),
 	}
 
 	key := p.getProfileKey(modelID)
-
-	// Ensure only one process initializes the profile
 	wasSet, err := p.rdb.HSetNX(ctx, key, "model_id", profile.ModelID).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis HSetNX failed for %s: %w", modelID, err)
@@ -133,34 +137,35 @@ func (p *Profiler) createDefaultProfile(ctx context.Context, modelID string) (*M
 
 	if wasSet {
 		pipe := p.rdb.Pipeline()
-		pipe.HSet(ctx, key, "avg_latency_ms", profile.AvgLatencyMS)
-		pipe.HSet(ctx, key, "cost_per_input_token", profile.CostPerInputToken)
-		pipe.HSet(ctx, key, "cost_per_output_token", profile.CostPerOutputToken)
-		pipe.HSet(ctx, key, "status", profile.Status)
-		pipe.HSet(ctx, key, "total_successes", profile.TotalSuccesses)
-		pipe.HSet(ctx, key, "total_failures", profile.TotalFailures)
-		pipe.HSet(ctx, key, "error_rate", profile.ErrorRate)
-		pipe.HSet(ctx, key, "last_health_check", profile.LastHealthCheck.Format(time.RFC3339Nano))
+		pipe.HSet(ctx, key,
+			"provider", profile.Provider,
+			"avg_latency_ms", profile.AvgLatencyMS,
+			"cost_per_input_token", profile.CostPerInputToken,
+			"cost_per_output_token", profile.CostPerOutputToken,
+			"status", profile.Status,
+			"total_successes", profile.TotalSuccesses,
+			"total_failures", profile.TotalFailures,
+			"error_rate", profile.ErrorRate,
+			"last_health_check", profile.LastHealthCheck.Format(time.RFC3339Nano),
+			"consecutive_failures", 0,
+			"circuit_open_until", "",
+			"last_error", "",
+		)
 		if _, err := pipe.Exec(ctx); err != nil {
 			return nil, fmt.Errorf("failed to populate new profile for %s: %w", modelID, err)
 		}
 		log.Printf("[INFO] Created new profile for %s", modelID)
 	} else {
-		log.Printf("[INFO] Profile for %s already exists, fetching.", modelID)
 		return p.GetProfile(ctx, modelID)
 	}
 
 	return profile, nil
 }
 
-// ================================================================================
-// UpdateProfileOnSuccess: Atomic updates on successful model usage.
-// ================================================================================
 func (p *Profiler) UpdateProfileOnSuccess(ctx context.Context, modelID string, latency time.Duration, usage api.Usage) {
 	key := p.getProfileKey(modelID)
-	const alpha = 0.1 // smoothing factor for latency EMA
+	const alpha = 0.1
 
-	// Get required fields before update
 	results, err := p.rdb.HMGet(ctx, key, "avg_latency_ms", "total_failures").Result()
 	if err != nil {
 		log.Printf("[ERROR] Failed to fetch profile data for success update %s: %v", modelID, err)
@@ -168,15 +173,24 @@ func (p *Profiler) UpdateProfileOnSuccess(ctx context.Context, modelID string, l
 	}
 	currentLatency, _ := strconv.ParseInt(fmt.Sprint(results[0]), 10, 64)
 	totalFailures, _ := strconv.ParseInt(fmt.Sprint(results[1]), 10, 64)
+	if currentLatency == 0 {
+		currentLatency = latency.Milliseconds()
+	}
 
 	newLatency := int64((alpha * float64(latency.Milliseconds())) + ((1.0 - alpha) * float64(currentLatency)))
 
 	pipe := p.rdb.Pipeline()
-	pipe.HSet(ctx, key, "avg_latency_ms", newLatency)
 	successes := pipe.HIncrBy(ctx, key, "total_successes", 1)
 	pipe.HIncrBy(ctx, key, "total_input_tokens", int64(usage.PromptTokens))
 	pipe.HIncrBy(ctx, key, "total_output_tokens", int64(usage.CompletionTokens))
-	pipe.HSet(ctx, key, "status", "online")
+	pipe.HSet(ctx, key,
+		"avg_latency_ms", newLatency,
+		"status", string(HealthStatusOnline),
+		"last_error", "",
+		"consecutive_failures", 0,
+		"circuit_open_until", "",
+		"last_health_check", time.Now().UTC().Format(time.RFC3339Nano),
+	)
 
 	callCost := float64(usage.PromptTokens)*modelCosts[modelID]["input"] +
 		float64(usage.CompletionTokens)*modelCosts[modelID]["output"]
@@ -195,47 +209,345 @@ func (p *Profiler) UpdateProfileOnSuccess(ctx context.Context, modelID string, l
 	}
 }
 
-// ================================================================================
-// UpdateProfileOnFailure: Atomic updates on failed model usage.
-// ================================================================================
-func (p *Profiler) UpdateProfileOnFailure(ctx context.Context, modelID string) {
-	key := p.getProfileKey(modelID)
-	pipe := p.rdb.Pipeline()
-	failures := pipe.HIncrBy(ctx, key, "total_failures", 1)
-	pipe.HSet(ctx, key, "status", "degraded")
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		log.Printf("[ERROR] Failed failure update for %s: %v", modelID, err)
+func (p *Profiler) UpdateProfileOnFailure(ctx context.Context, modelID string, err error) {
+	profile, profileErr := p.GetProfile(ctx, modelID)
+	if profileErr != nil {
+		log.Printf("[ERROR] Failed to fetch profile for failure update %s: %v", modelID, profileErr)
 		return
 	}
 
-	successesStr, _ := p.rdb.HGet(ctx, key, "total_successes").Result()
-	totalSuccesses, _ := strconv.ParseInt(successesStr, 10, 64)
-	totalRequests := totalSuccesses + failures.Val()
+	key := p.getProfileKey(modelID)
+	pipe := p.rdb.Pipeline()
+	failures := pipe.HIncrBy(ctx, key, "total_failures", 1)
+	consecutiveFailures := pipe.HIncrBy(ctx, key, "consecutive_failures", 1)
+	status := string(HealthStatusDegraded)
+	circuitOpenUntil := ""
+	if consecutiveFailures.Val() >= p.circuitBreakerFailureThreshold() {
+		status = string(HealthStatusOffline)
+		circuitOpenUntil = time.Now().UTC().Add(p.circuitBreakerCooldown()).Format(time.RFC3339Nano)
+	}
+	pipe.HSet(ctx, key,
+		"status", status,
+		"last_error", stringifyError(err),
+		"circuit_open_until", circuitOpenUntil,
+		"last_health_check", time.Now().UTC().Format(time.RFC3339Nano),
+	)
+
+	if _, execErr := pipe.Exec(ctx); execErr != nil {
+		log.Printf("[ERROR] Failed failure update for %s: %v", modelID, execErr)
+		return
+	}
+
+	totalRequests := profile.TotalSuccesses + failures.Val()
 	if totalRequests > 0 {
 		errorRate := float64(failures.Val()) / float64(totalRequests)
-		p.rdb.HSet(ctx, key, "error_rate", errorRate)
+		if setErr := p.rdb.HSet(ctx, key, "error_rate", errorRate).Err(); setErr != nil {
+			log.Printf("[ERROR] Failed to update error rate for %s: %v", modelID, setErr)
+		}
 	}
 }
 
-// ================================================================================
-// UpdateProfileOnHealthCheck: Periodic health check updates.
-// ================================================================================
-func (p *Profiler) UpdateProfileOnHealthCheck(ctx context.Context, modelID string, isHealthy bool) {
-	_, err := p.GetProfile(ctx, modelID)
+func (p *Profiler) UpdateModelHealthCheck(ctx context.Context, modelID string, probe HealthProbeResult) {
+	profile, err := p.GetProfile(ctx, modelID)
 	if err != nil {
-		log.Printf("[WARN] Error ensuring profile exists during health check for %s: %v", modelID, err)
+		log.Printf("[WARN] Error ensuring profile exists during model health check for %s: %v", modelID, err)
+		return
+	}
+
+	status := probe.Status
+	if status == "" {
+		status, probe.AccessAllowed = classifyProbeError(probe.Err)
+	}
+	if !probe.AccessAllowed {
+		status = HealthStatusOffline
 	}
 
 	key := p.getProfileKey(modelID)
-	status := "offline"
-	if isHealthy {
-		status = "online"
-	}
+	previousStatus := normalizeHealthStatus(profile.Status)
 	pipe := p.rdb.Pipeline()
-	pipe.HSet(ctx, key, "status", status)
-	pipe.HSet(ctx, key, "last_health_check", time.Now().Format(time.RFC3339Nano))
-	if _, err = pipe.Exec(ctx); err != nil {
-		log.Printf("[ERROR] Failed health check update for %s: %v", modelID, err)
+	fields := []interface{}{
+		"status", string(status),
+		"last_health_check", time.Now().UTC().Format(time.RFC3339Nano),
+		"last_error", stringifyError(probe.Err),
 	}
+	if probe.Latency > 0 {
+		fields = append(fields, "avg_latency_ms", probe.Latency.Milliseconds())
+	}
+	if status == HealthStatusOnline {
+		fields = append(fields, "consecutive_failures", 0, "circuit_open_until", "")
+	} else {
+		fields = append(fields, "consecutive_failures", profile.ConsecutiveFailures+1)
+		if profile.ConsecutiveFailures+1 >= p.circuitBreakerFailureThreshold() {
+			fields = append(fields, "circuit_open_until", time.Now().UTC().Add(p.circuitBreakerCooldown()).Format(time.RFC3339Nano))
+		}
+	}
+	pipe.HSet(ctx, key, fields...)
+	if _, err := pipe.Exec(ctx); err != nil {
+		log.Printf("[ERROR] Failed model health check update for %s: %v", modelID, err)
+		return
+	}
+	if previousStatus != status {
+		observability.Default().RecordHealthTransition("model", modelID, string(previousStatus), string(status))
+	}
+}
+
+func (p *Profiler) UpdateProviderHealthCheck(ctx context.Context, provider string, probe HealthProbeResult) {
+	key := p.getProviderHealthKey(provider)
+	current, _ := p.GetProviderHealth(ctx, provider)
+	status := probe.Status
+	if status == "" {
+		status, probe.AccessAllowed = classifyProbeError(probe.Err)
+	}
+	if !probe.AccessAllowed {
+		status = HealthStatusOffline
+	}
+	fields := map[string]interface{}{
+		"provider":             provider,
+		"status":               string(status),
+		"access_allowed":       probe.AccessAllowed,
+		"last_health_check":    time.Now().UTC().Format(time.RFC3339Nano),
+		"last_error":           stringifyError(probe.Err),
+		"consecutive_failures": 0,
+	}
+	if probe.Latency > 0 {
+		fields["avg_latency_ms"] = probe.Latency.Milliseconds()
+	}
+	if status != HealthStatusOnline {
+		fields["consecutive_failures"] = current.ConsecutiveFailures + 1
+	}
+	if err := p.rdb.HSet(ctx, key, fields).Err(); err != nil {
+		log.Printf("[ERROR] Failed provider health update for %s: %v", provider, err)
+		return
+	}
+	if current.Status != status {
+		observability.Default().RecordHealthTransition("provider", provider, string(current.Status), string(status))
+	}
+}
+
+func (p *Profiler) UpdateCapabilityHealthCheck(ctx context.Context, provider, modelID string, capability Capability, probe HealthProbeResult) {
+	key := p.getCapabilityHealthKey(provider, modelID, capability)
+	current, err := p.GetCapabilityHealth(ctx, provider, modelID, capability)
+	if err != nil || current == nil {
+		current = &CapabilityHealth{Status: HealthStatusOnline}
+	}
+	status := probe.Status
+	if status == "" {
+		status, probe.AccessAllowed = classifyProbeError(probe.Err)
+	}
+	if !probe.AccessAllowed {
+		status = HealthStatusOffline
+	}
+	fields := map[string]interface{}{
+		"provider":             provider,
+		"model_id":             modelID,
+		"capability":           string(capability),
+		"status":               string(status),
+		"access_allowed":       probe.AccessAllowed,
+		"supported":            true,
+		"last_health_check":    time.Now().UTC().Format(time.RFC3339Nano),
+		"last_error":           stringifyError(probe.Err),
+		"consecutive_failures": 0,
+	}
+	if probe.Latency > 0 {
+		fields["avg_latency_ms"] = probe.Latency.Milliseconds()
+	}
+	if status != HealthStatusOnline {
+		fields["consecutive_failures"] = current.ConsecutiveFailures + 1
+	}
+	if err := p.rdb.HSet(ctx, key, fields).Err(); err != nil {
+		log.Printf("[ERROR] Failed capability health update for %s/%s/%s: %v", provider, modelID, capability, err)
+		return
+	}
+	if current.Status != status {
+		observability.Default().RecordHealthTransition("capability", BuildCapabilityHealthID(provider, modelID, capability), string(current.Status), string(status))
+	}
+}
+
+func (p *Profiler) GetProviderHealth(ctx context.Context, provider string) (*ProviderHealth, error) {
+	key := p.getProviderHealthKey(provider)
+	data, err := p.rdb.HGetAll(ctx, key).Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		defaultHealth := &ProviderHealth{
+			Provider:        provider,
+			Status:          HealthStatusOnline,
+			AccessAllowed:   true,
+			LastHealthCheck: time.Now().UTC(),
+		}
+		if err := p.rdb.HSet(ctx, key,
+			"provider", provider,
+			"status", string(defaultHealth.Status),
+			"access_allowed", defaultHealth.AccessAllowed,
+			"last_health_check", defaultHealth.LastHealthCheck.Format(time.RFC3339Nano),
+		).Err(); err != nil {
+			return nil, err
+		}
+		return defaultHealth, nil
+	}
+	return &ProviderHealth{
+		Provider:            provider,
+		Status:              normalizeHealthStatus(data["status"]),
+		AccessAllowed:       parseBool(data["access_allowed"], true),
+		AvgLatencyMS:        parseInt64(data["avg_latency_ms"], 0),
+		LastHealthCheck:     parseTime(data["last_health_check"]),
+		ConsecutiveFailures: parseInt64(data["consecutive_failures"], 0),
+		LastError:           data["last_error"],
+	}, nil
+}
+
+func (p *Profiler) GetCapabilityHealth(ctx context.Context, provider, modelID string, capability Capability) (*CapabilityHealth, error) {
+	key := p.getCapabilityHealthKey(provider, modelID, capability)
+	data, err := p.rdb.HGetAll(ctx, key).Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		defaultHealth := &CapabilityHealth{
+			Provider:        provider,
+			ModelID:         modelID,
+			Capability:      capability,
+			Status:          HealthStatusOnline,
+			AccessAllowed:   true,
+			Supported:       true,
+			LastHealthCheck: time.Now().UTC(),
+		}
+		if err := p.rdb.HSet(ctx, key,
+			"provider", provider,
+			"model_id", modelID,
+			"capability", string(capability),
+			"status", string(defaultHealth.Status),
+			"access_allowed", defaultHealth.AccessAllowed,
+			"supported", defaultHealth.Supported,
+			"last_health_check", defaultHealth.LastHealthCheck.Format(time.RFC3339Nano),
+		).Err(); err != nil {
+			return nil, err
+		}
+		return defaultHealth, nil
+	}
+	return &CapabilityHealth{
+		Provider:            provider,
+		ModelID:             modelID,
+		Capability:          Capability(data["capability"]),
+		Status:              normalizeHealthStatus(data["status"]),
+		AccessAllowed:       parseBool(data["access_allowed"], true),
+		Supported:           parseBool(data["supported"], true),
+		AvgLatencyMS:        parseInt64(data["avg_latency_ms"], 0),
+		ErrorRate:           parseFloat64(data["error_rate"], 0),
+		LastHealthCheck:     parseTime(data["last_health_check"]),
+		ConsecutiveFailures: parseInt64(data["consecutive_failures"], 0),
+		LastError:           data["last_error"],
+	}, nil
+}
+
+func (p *Profiler) CombinedModelHealth(ctx context.Context, modelID string, capability Capability) (HealthStatus, *ProviderHealth, *CapabilityHealth, *ModelProfile, error) {
+	profile, err := p.GetProfile(ctx, modelID)
+	if err != nil {
+		return HealthStatusOffline, nil, nil, nil, err
+	}
+	providerHealth, err := p.GetProviderHealth(ctx, ProviderForModel(modelID))
+	if err != nil {
+		return HealthStatusOffline, nil, nil, nil, err
+	}
+	capabilityHealth, err := p.GetCapabilityHealth(ctx, ProviderForModel(modelID), modelID, capability)
+	if err != nil {
+		return HealthStatusOffline, nil, nil, nil, err
+	}
+	return combineHealthStatuses(normalizeHealthStatus(profile.Status), providerHealth.Status, capabilityHealth.Status), providerHealth, capabilityHealth, profile, nil
+}
+
+func (p *Profiler) healthCheckStaleness() time.Duration {
+	if p == nil || p.config == nil {
+		return 5 * time.Minute
+	}
+	if val, ok := p.config.Thresholds["health_check_staleness"].(string); ok {
+		if parsed, err := time.ParseDuration(val); err == nil {
+			return parsed
+		}
+	}
+	return 5 * time.Minute
+}
+
+func (p *Profiler) circuitBreakerFailureThreshold() int64 {
+	return int64(p.getThresholdInt("circuit_breaker_failure_threshold", 3))
+}
+
+func (p *Profiler) circuitBreakerCooldown() time.Duration {
+	if p == nil || p.config == nil {
+		return 2 * time.Minute
+	}
+	if raw, ok := p.config.Thresholds["circuit_breaker_cooldown"].(string); ok {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			return parsed
+		}
+	}
+	return 2 * time.Minute
+}
+
+func (p *Profiler) getThresholdInt(key string, fallback int) int {
+	if p == nil || p.config == nil {
+		return fallback
+	}
+	switch v := p.config.Thresholds[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return fallback
+	}
+}
+
+func parseInt64(value string, fallback int64) int64 {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func parseFloat64(value string, fallback float64) float64 {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func parseBool(value string, fallback bool) bool {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func parseTime(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+func stringifyError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

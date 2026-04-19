@@ -26,23 +26,32 @@ The gateway sits between the user and multiple LLM providers. It enriches prompt
 
 * **💬 Stateful, Multi-Turn Conversations:**
     * **Two Chat Modes:** Seamlessly supports "dynamic" chats (for flexibility) and "forced model" chats (for absolute consistency).
+    * **Mid-Session Forced Overrides:** A conversation can stay intact while the active forced model is explicitly switched mid-session (for example, `gpt-4o -> claude`), with override metadata persisted in Redis.
     * **Full Conversation History:** Processes chat history sent from the client to provide models with conversational memory, enabling a true ChatGPT-like experience.
 
 * **🛡️ Automatic Failover & Resilience:**
-    * **Proactive Health Checks:** A background service constantly monitors the health of all connected LLMs.
+    * **Layered Health Checks:** Health is tracked at the provider, model, and capability levels so routing can distinguish between "provider up", "specific model degraded", and "capability unavailable".
+    * **Circuit Breaking:** Repeated failures temporarily open a circuit and keep unhealthy models out of rotation until the cool-down window expires.
     * **Seamless Failover:** If a pinned model goes offline mid-conversation, the gateway automatically re-routes to the next-best healthy model. The API response includes failover details for the UI.
 
-* **📄 Retrieval-Augmented Generation (RAG):** Enriches user prompts with relevant, up-to-date context from a Pinecone vector database.
+* **📄 Retrieval-Augmented Generation (RAG):**
+    * **Freshness-Aware Retrieval:** Pinecone chunks now carry source, section, timestamp, version, and content-hash metadata.
+    * **Safer Prompt Augmentation:** Retrieval performs duplicate suppression, local reranking, max-context budgeting, and stale-source filtering before context is injected into the prompt.
 
 * **⚡ Multi-Layer Caching:**
-    * **Response Cache:** Caches final LLM responses in Redis for repeated queries.
-    * **Embedding Cache:** Caches vector embeddings to reduce redundant API calls and lower costs.
+    * **Versioned Response Cache:** Final responses are keyed by prompt, history, routed model, routing mode, and retrieved document-version signature to avoid stale cache reuse after corpus updates.
+    * **Embedding Cache:** Embeddings are versioned by embedding-model metadata to reduce redundant API calls and lower costs safely.
 
 * **🛠️ Agentic Tool Use:** Can leverage an LLM's function-calling ability to execute external tools (e.g., weather APIs, calculators).
 
 * **📦 Production-Ready:** Fully containerized with Docker and features a complete CI/CD pipeline using GitHub Actions for automated testing, linting, and publishing.
 
 * **🔌 Designed for Extensibility:** The gateway is built on a modular, interface-driven architecture (`LLMClient`, `ToolExecutor`). This makes it trivial to integrate **new AI models, providers, or custom tools** with minimal code changes, ensuring the platform can adapt to the rapidly evolving AI landscape.
+
+* **📈 Runtime Metrics Endpoint:** A lightweight JSON metrics endpoint is exposed at `/api/v1/metrics` for request counts, health transitions, cache activity, failovers, forced overrides, and latency percentiles.
+* **🧭 Phase 6 Product Surface:** The gateway now serves a multimodal end-user workspace at `/` and an admin/developer control plane at `/admin`.
+* **🏢 Governance, Tenancy, and Security:** Requests can be scoped to tenants and workspaces, evaluated against policy bundles, audited, and protected with signed artifact access.
+* **☁️ Split API/Worker Runtime:** The same binary can run in API-only, worker-only, or combined mode for local development and Kubernetes deployment.
 
 ---
 
@@ -109,6 +118,12 @@ Building this platform provided deep insights into the practical challenges of o
     docker-compose up --build
     ```
     The gateway will be available at `http://localhost:8081`.
+    * `POST /api/v1/generate` handles routed generation requests.
+    * `POST /api/v1/assets/upload` registers uploaded multimodal artifacts.
+    * `GET /` serves the end-user Phase 6 workspace.
+    * `GET /admin` serves the operator and developer control plane.
+    * `GET /api/v1/metrics` returns the built-in runtime metrics snapshot.
+    * `GET /healthz` and `GET /readyz` provide Kubernetes-friendly health probes.
 
 ---
 
@@ -123,12 +138,11 @@ This project was built to demonstrate a production-grade, scalable, and resilien
 -   **Reliability:** Ensuring high availability through automatic health checks and seamless failover.
 -   **Flexibility:** Supporting multiple chat modes and conversational contexts.
 
-### Future Work
+### Next Extensions
 
-- **Integrate More Providers & Tools:** Leverage the gateway's modular design to add support for other leading models (e.g., Meta's Llama series, xAI's Grok) and new external tools, further expanding the platform's capabilities.
--   **Implementing a UI:** Building a React/Next.js frontend with a full chat interface.
--   **Building a Cost-Tracking Dashboard:** Creating a UI to visualize the cost savings and performance metrics.
--   **Advanced Deployment Strategies:** Implementing canary deployments or A/B testing for new models using a service mesh like Istio.
+- **Integrate More Providers & Tools:** Leverage the gateway's modular design to add support for other leading models and enterprise connectors.
+- **Persistent Artifact Storage:** Replace demo-friendly local artifact storage with cloud object storage and lifecycle policies.
+- **Advanced Deployment Strategies:** Introduce service-mesh routing, canaries, and region-aware failover on top of the new Phase 6 split runtime.
 
 ---
 

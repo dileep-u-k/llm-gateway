@@ -1,188 +1,904 @@
 # config.yaml
-# Centralized config for routing, thresholds, and strategies.
-# 100% Production-Ready Version
+# Autonomous AI Orchestration
+# Production-Grade Control Plane Configuration
+# vNext — full end-to-end platform config
+#
+# Notes:
+# - Keep hardcoded price/model values minimal where possible.
+# - In production, refresh provider/model catalogs from provider APIs or scheduled metadata sync.
+# - "quality_score", "reasoning_score", etc. are initial priors; real ranking should be adjusted by evals.
+
+version: "2.0"
+
+environment:
+  name: "production"
+  region: "global"
+  default_timezone: "UTC"
+  config_refresh_interval: "15m"
 
 # ================================================================
-# Pre-check thresholds
+# GLOBAL ORCHESTRATION SETTINGS
+# ================================================================
+orchestration:
+  request_timeout: "60s"
+  default_sync_timeout: "25s"
+  max_stage_count_sync: 6
+  max_stage_count_async: 20
+  default_async_threshold_seconds: 20
+  route_explanation_enabled: true
+  orchestration_metadata_ttl: "24h"
+  request_replay_ttl: "7d"
+  enable_shadow_routing: true
+  enable_canary_routing: true
+
+# ================================================================
+# SESSION + FORCE SEMANTICS
+# ================================================================
+session:
+  backend: "redis"
+  session_ttl: "72h"
+  summary_memory_refresh_interval: 5
+  max_short_term_turns: 12
+  preserve_artifact_refs: true
+
+force_semantics:
+  supported_scopes:
+    - primary_reasoner_force
+    - capability_scoped_force
+    - strict_end_to_end_force
+
+  default_scope: primary_reasoner_force
+  allow_mid_session_force_override: true
+  strict_force_default: false
+  allow_failover_when_strict_force: false
+  allow_auxiliary_stages_when_primary_reasoner_forced: true
+
+  capability_scoped_bindings:
+    text_generation:
+      default_stage_roles: ["planner", "reasoner", "final_synthesizer"]
+    image_generation:
+      default_stage_roles: ["image_generator"]
+    image_editing:
+      default_stage_roles: ["image_editor"]
+    transcription:
+      default_stage_roles: ["transcriber"]
+    tts:
+      default_stage_roles: ["speech_synthesizer"]
+
+# ================================================================
+# HEALTH, CIRCUIT BREAKERS, AND PRE-CHECKS
 # ================================================================
 pre_check_thresholds:
-  max_error_rate: 0.15          # Skip models with >15% error rate
-  min_request_count: 20         # Only apply error check after 20 requests
-  health_check_staleness: "5m"  # Consider model unhealthy if health check is older than 5 minutes
-  relevance_threshold: 0.45     # Min similarity score for RAG context
+  max_error_rate: 0.15
+  min_request_count: 20
+  health_check_staleness: "5m"
+  relevance_threshold: 0.45
+  min_rerank_score: 0.50
+  max_queue_wait_sync: "2s"
+  max_stage_retry_count: 2
+
+health:
+  provider_probe_interval: "60s"
+  model_probe_interval: "90s"
+  capability_probe_interval: "120s"
+
+  health_states:
+    - online
+    - degraded
+    - offline
+    - unknown
+    - rate_limited
+
+  degrade_thresholds:
+    error_rate: 0.10
+    timeout_rate: 0.08
+    p95_latency_ms: 8000
+
+  offline_thresholds:
+    consecutive_failures: 3
+    auth_failures: 2
+
+circuit_breakers:
+  enabled: true
+  failure_threshold: 3
+  cooldown: "2m"
+  half_open_probe_count: 1
 
 # ================================================================
-# Smart-Balanced Thresholds
+# COST / LATENCY SMART THRESHOLDS
 # ================================================================
-smart_balanced_cost_threshold: 0.001  # Below this cost, prioritize latency
+routing_thresholds:
+  smart_balanced_cost_threshold_usd: 0.001
+  high_complexity_token_threshold: 12000
+  async_candidate_duration_seconds: 20
+  image_generation_async_default: true
+  video_always_async_minutes: 5
+  audio_async_default_minutes: 10
 
 # ================================================================
-# Models Metadata
+# PROVIDER REGISTRY
 # ================================================================
-# Each model should have quality, coding, latency, reliability, and cost scores
+providers:
+  openai:
+    endpoint: "https://api.openai.com/v1"
+    regions: ["global", "us"]
+    supports_catalog_sync: true
+    default_headers_required: true
+
+  anthropic:
+    endpoint: "https://api.anthropic.com"
+    regions: ["global", "us"]
+    supports_catalog_sync: false
+    default_headers_required: true
+
+  google:
+    endpoint: "https://generativelanguage.googleapis.com"
+    regions: ["global"]
+    supports_catalog_sync: true
+    default_headers_required: true
+
+  mistral:
+    endpoint: "https://api.mistral.ai"
+    regions: ["global", "eu"]
+    supports_catalog_sync: true
+    default_headers_required: true
+
+# ================================================================
+# CAPABILITY REGISTRY
+# ================================================================
+capabilities:
+  text_generation:
+    description: "General-purpose reasoning, synthesis, coding, and chat completion."
+    modalities_in: ["text", "document", "image", "audio", "video", "multimodal"]
+    modalities_out: ["text", "json"]
+    async_likely: false
+
+  embeddings:
+    description: "Dense vector embedding generation for retrieval and semantic similarity."
+    modalities_in: ["text", "document"]
+    modalities_out: ["vector"]
+    async_likely: false
+
+  ocr:
+    description: "Document and image OCR plus structured text extraction."
+    modalities_in: ["document", "image"]
+    modalities_out: ["text", "json"]
+    async_likely: true
+
+  image_understanding:
+    description: "Vision understanding, image analysis, captioning, and screenshot reasoning."
+    modalities_in: ["image"]
+    modalities_out: ["text", "json"]
+    async_likely: false
+
+  image_generation:
+    description: "Native image generation from prompts or conditioned inputs."
+    modalities_in: ["text", "image"]
+    modalities_out: ["image"]
+    async_likely: true
+
+  image_editing:
+    description: "Editing or transforming existing images."
+    modalities_in: ["image", "text"]
+    modalities_out: ["image"]
+    async_likely: true
+
+  transcription:
+    description: "Speech-to-text transcription, optionally with diarization."
+    modalities_in: ["audio", "video"]
+    modalities_out: ["text", "json"]
+    async_likely: true
+
+  tts:
+    description: "Text-to-speech synthesis."
+    modalities_in: ["text"]
+    modalities_out: ["audio"]
+    async_likely: true
+
+  video_understanding:
+    description: "Video interpretation, scene reasoning, multimodal summary."
+    modalities_in: ["video"]
+    modalities_out: ["text", "json"]
+    async_likely: true
+
+  video_generation_hook:
+    description: "Video generation orchestration hook for future provider integrations."
+    modalities_in: ["text", "image", "audio", "multimodal"]
+    modalities_out: ["video", "job_ref"]
+    async_likely: true
+
+# ================================================================
+# MODEL REGISTRY
+# ================================================================
+# These are starter entries. In production, sync/update this registry automatically.
 models:
+
+  # ---------------- OPENAI ----------------
+  gpt-5.4:
+    provider: openai
+    reasoning_score: 10.0
+    coding_score: 9.8
+    quality_score: 10.0
+    reliability_score: 9.5
+    modalities: ["text"]
+    capabilities: ["text_generation"]
+    cost_tier: frontier
+    latency_tier: medium
+    quality_tier: frontier
+    context_limit: 400000
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: true
+    async_suitable: false
+    status: active
+
+  gpt-5.4-mini:
+    provider: openai
+    reasoning_score: 9.2
+    coding_score: 9.4
+    quality_score: 9.1
+    reliability_score: 9.4
+    modalities: ["text"]
+    capabilities: ["text_generation"]
+    cost_tier: balanced
+    latency_tier: fast
+    quality_tier: high
+    context_limit: 400000
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: true
+    async_suitable: false
+    status: active
+
   gpt-4o:
-    quality_score: 9.8
-    coding_score: 9.9
-    #latency_score: 0.8 # These are illustrative comments, not actual config fields
-    #reliability_score: 0.95
-    #cost_score: 0.3
+    provider: openai
+    reasoning_score: 9.1
+    coding_score: 9.4
+    quality_score: 9.3
+    reliability_score: 9.5
+    modalities: ["text", "image"]
+    capabilities: ["text_generation", "image_understanding"]
+    cost_tier: premium
+    latency_tier: medium
+    quality_tier: frontier
+    context_limit: 128000
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: true
+    async_suitable: false
+    status: active
 
-  gemini-1.5-flash-latest:
-    quality_score: 8.0
-    coding_score: 8.2
-    #latency_score: 0.9
-    #reliability_score: 0.9
-    #cost_score: 0.5
+  gpt-image-1.5:
+    provider: openai
+    quality_score: 9.6
+    artistic_score: 9.0
+    reliability_score: 9.2
+    modalities: ["text", "image"]
+    capabilities: ["image_generation", "image_editing"]
+    cost_tier: premium
+    latency_tier: medium
+    quality_tier: frontier
+    streaming_supported: false
+    structured_output_supported: false
+    tool_supported: false
+    async_suitable: true
+    status: active
 
-  claude-sonnet-4-20250514:
+  gpt-realtime-1.5:
+    provider: openai
     quality_score: 9.2
-    coding_score: 9.5
-    #latency_score: 0.85
-    #reliability_score: 0.93
-    #cost_score: 0.4
+    realtime_score: 9.8
+    reliability_score: 9.3
+    modalities: ["text", "audio", "image"]
+    capabilities: ["text_generation", "image_understanding", "tts", "transcription"]
+    cost_tier: premium
+    latency_tier: realtime
+    quality_tier: frontier
+    context_limit: 32000
+    streaming_supported: true
+    structured_output_supported: false
+    tool_supported: true
+    async_suitable: false
+    status: active
 
-  mistral-large-latest:
+  gpt-4o-transcribe-diarize:
+    provider: openai
+    quality_score: 9.1
+    reliability_score: 9.2
+    modalities: ["audio"]
+    capabilities: ["transcription"]
+    cost_tier: balanced
+    latency_tier: fast
+    quality_tier: high
+    streaming_supported: false
+    structured_output_supported: true
+    tool_supported: false
+    async_suitable: true
+    status: active
+
+  gpt-4o-mini-tts:
+    provider: openai
+    quality_score: 8.9
+    reliability_score: 9.0
+    modalities: ["audio"]
+    capabilities: ["tts"]
+    cost_tier: balanced
+    latency_tier: fast
+    quality_tier: high
+    streaming_supported: false
+    structured_output_supported: false
+    tool_supported: false
+    async_suitable: true
+    status: active
+
+  tts-1-hd:
+    provider: openai
     quality_score: 8.8
+    reliability_score: 9.0
+    modalities: ["audio"]
+    capabilities: ["tts"]
+    cost_tier: premium
+    latency_tier: medium
+    quality_tier: high
+    streaming_supported: false
+    structured_output_supported: false
+    tool_supported: false
+    async_suitable: true
+    status: active
+
+  # ---------------- ANTHROPIC ----------------
+  claude-sonnet-4-6:
+    provider: anthropic
+    reasoning_score: 9.5
+    coding_score: 9.6
+    quality_score: 9.4
+    reliability_score: 9.4
+    modalities: ["text"]
+    capabilities: ["text_generation"]
+    cost_tier: premium
+    latency_tier: medium
+    quality_tier: frontier
+    context_limit: 200000
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: true
+    async_suitable: false
+    status: active
+
+  claude-opus-4-7:
+    provider: anthropic
+    reasoning_score: 9.9
+    coding_score: 9.7
+    quality_score: 9.8
+    reliability_score: 9.2
+    modalities: ["text"]
+    capabilities: ["text_generation"]
+    cost_tier: frontier
+    latency_tier: medium
+    quality_tier: frontier
+    context_limit: 200000
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: true
+    async_suitable: false
+    status: active
+
+  # ---------------- GOOGLE ----------------
+  gemini-2.5-flash:
+    provider: google
+    reasoning_score: 8.7
     coding_score: 8.5
-    #latency_score: 0.88
-    #reliability_score: 0.92
-    #cost_score: 0.6
+    quality_score: 8.8
+    reliability_score: 9.0
+    modalities: ["text", "image", "audio", "video"]
+    capabilities: ["text_generation", "image_understanding", "video_understanding"]
+    cost_tier: economy
+    latency_tier: fast
+    quality_tier: balanced
+    context_limit: 1000000
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: true
+    async_suitable: false
+    status: active
 
-# --- ADD THIS NEW SECTION ---
-# ================================================================
-# Image Models Metadata
-# ================================================================
-image_models:
-  dall-e-3:
-    quality_score: 9.5  # How good is it at generating realistic, high-quality images?
-    artistic_score: 8.5 # How good is it at creative, artistic styles?
-    speed_score: 7.0 
-  imagen-2:
-    quality_score: 9.2
-    artistic_score: 8.8
-    speed_score: 8.0
-# ... (add other models like Midjourney here in the future)
+  gemini-2.5-flash-lite:
+    provider: google
+    reasoning_score: 8.1
+    coding_score: 8.0
+    quality_score: 8.0
+    reliability_score: 9.0
+    modalities: ["text", "image", "audio", "video"]
+    capabilities: ["text_generation", "image_understanding", "video_understanding"]
+    cost_tier: economy
+    latency_tier: fastest
+    quality_tier: value
+    context_limit: 1000000
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: true
+    async_suitable: false
+    status: active
 
+  gemini-2.5-pro:
+    provider: google
+    reasoning_score: 9.4
+    coding_score: 9.3
+    quality_score: 9.4
+    reliability_score: 9.0
+    modalities: ["text", "image", "audio", "video"]
+    capabilities: ["text_generation", "image_understanding", "video_understanding"]
+    cost_tier: premium
+    latency_tier: medium
+    quality_tier: frontier
+    context_limit: 1000000
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: true
+    async_suitable: false
+    status: active
+
+  gemini-2.5-flash-tts:
+    provider: google
+    quality_score: 8.8
+    reliability_score: 8.9
+    modalities: ["audio"]
+    capabilities: ["tts"]
+    cost_tier: balanced
+    latency_tier: fast
+    quality_tier: high
+    streaming_supported: false
+    structured_output_supported: false
+    tool_supported: false
+    async_suitable: true
+    status: active
+
+  imagen-4-generate:
+    provider: google
+    quality_score: 9.3
+    artistic_score: 9.1
+    reliability_score: 9.0
+    modalities: ["image"]
+    capabilities: ["image_generation"]
+    cost_tier: premium
+    latency_tier: medium
+    quality_tier: high
+    streaming_supported: false
+    structured_output_supported: false
+    tool_supported: false
+    async_suitable: true
+    status: preview
+
+  # ---------------- MISTRAL ----------------
+  mistral-large-3:
+    provider: mistral
+    reasoning_score: 8.9
+    coding_score: 8.7
+    quality_score: 8.9
+    reliability_score: 8.8
+    modalities: ["text", "image"]
+    capabilities: ["text_generation", "image_understanding"]
+    cost_tier: value
+    latency_tier: medium
+    quality_tier: high
+    context_limit: 128000
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: true
+    async_suitable: false
+    status: active
+
+  ocr-3-premier:
+    provider: mistral
+    quality_score: 9.0
+    reliability_score: 8.9
+    modalities: ["document", "image"]
+    capabilities: ["ocr"]
+    cost_tier: premium
+    latency_tier: medium
+    quality_tier: frontier
+    streaming_supported: false
+    structured_output_supported: true
+    tool_supported: false
+    async_suitable: true
+    status: active
+
+  voxtral-mini-transcribe-realtime:
+    provider: mistral
+    quality_score: 8.6
+    reliability_score: 8.8
+    modalities: ["audio"]
+    capabilities: ["transcription"]
+    cost_tier: value
+    latency_tier: realtime
+    quality_tier: high
+    streaming_supported: true
+    structured_output_supported: true
+    tool_supported: false
+    async_suitable: true
+    status: active
 
 # ================================================================
-# Model Cost Data (REQUIRED for accurate profiling and routing)
+# PRICING
+# Keep only values you actively use. Refresh regularly.
 # ================================================================
 model_costs:
+  gpt-5.4:
+    input: 0.0000025
+    cached_input: 0.00000025
+    output: 0.000015
+
+  gpt-5.4-mini:
+    input: 0.00000075
+    cached_input: 0.000000075
+    output: 0.0000045
+
   gpt-4o:
-    input: 0.000005   # $5.00 / 1M tokens
-    output: 0.00002   # $20.00 / 1M tokens
-  gemini-1.5-flash-latest:
-    input: 0.000000075 # $0.075 / 1M tokens
-    output: 0.0000003 # $0.30 / 1M tokens
-  claude-sonnet-4-20250514:
-    input: 0.000003   # $3.00 / 1M tokens
-    output: 0.000015  # $15.00 / 1M tokens
-  mistral-large-latest:
-    input: 0.000002   # $2.00 / 1M tokens
-    output: 0.000006  # $6.00 / 1M tokens
+    input: 0.000005
+    output: 0.00002
+
+  claude-sonnet-4-6:
+    input: 0.000003
+    output: 0.000015
+
+  claude-opus-4-7:
+    input: 0.000005
+    output: 0.000025
+
+  gemini-2.5-flash:
+    input: 0.00000045
+    output: 0.0000027
+
+  gemini-2.5-flash-lite:
+    input: 0.000000125
+    output: 0.00000075
+
+  gemini-2.5-pro:
+    input: 0.000002
+    output: 0.000012
 
 # ================================================================
-# Strategy Definitions
+# RETRIEVAL / MEMORY / CONTEXT
 # ================================================================
-# Each strategy assigns weights to quality, cost, latency, and reliability.
-# If "use_coding_score" is true, coding_score replaces quality_score.
+retrieval:
+  vector_store: "pinecone"
+  top_k: 12
+  rerank_top_k: 6
+  chunking:
+    strategy: "hybrid_semantic_structural"
+    target_chunk_tokens: 700
+    overlap_tokens: 100
+    preserve_headers: true
+    preserve_tables: true
+  provenance:
+    enabled: true
+    include_source_title: true
+    include_section: true
+    include_version: true
+  fallback_on_vector_failure:
+    grounded_required: "fail"
+    grounded_preferred: "degrade"
+    best_effort: "continue"
+
+memory:
+  short_term_turn_limit: 12
+  enable_summary_memory: true
+  summary_refresh_every_turns: 4
+  enable_working_memory: true
+  preserve_artifact_refs: true
+  compact_long_sessions: true
+
+context_composer:
+  max_context_budget_ratio: 0.8
+  prioritize:
+    - user_request
+    - policy_constraints
+    - force_scope_constraints
+    - working_memory
+    - retrieved_evidence
+    - tool_outputs
+    - summary_memory
+  remove_duplicates: true
+  preserve_provenance_blocks: true
+
+# ================================================================
+# TOOLS
+# ================================================================
+tools:
+  enable_tool_planner: true
+  default_timeout: "10s"
+  default_retry_count: 1
+  allow_parallel_tool_calls: true
+
+  registry:
+    web_search:
+      capability: "external_lookup"
+      timeout: "12s"
+      retry_count: 1
+      async_suitable: false
+
+    calculator:
+      capability: "utility_compute"
+      timeout: "2s"
+      retry_count: 0
+      async_suitable: false
+
+    ocr_parser:
+      capability: "ocr"
+      timeout: "20s"
+      retry_count: 1
+      async_suitable: true
+
+    pdf_extractor:
+      capability: "document_extraction"
+      timeout: "20s"
+      retry_count: 1
+      async_suitable: true
+
+# ================================================================
+# EXECUTION PLANNER
+# ================================================================
+execution_planner:
+  enable_stage_graphs: true
+  max_sync_stages: 6
+  plan_types:
+    - direct_text_generation
+    - retrieve_then_answer
+    - ocr_then_reason
+    - transcribe_then_summarize
+    - image_analyze_then_synthesize
+    - multimodal_compare_and_reason
+    - image_generation_pipeline
+    - image_edit_pipeline
+    - tts_pipeline
+    - async_heavy_workflow
+
+  force_scope_rules:
+    primary_reasoner_force:
+      allow_auxiliary_specialists: true
+    capability_scoped_force:
+      allow_auxiliary_specialists: true
+    strict_end_to_end_force:
+      allow_auxiliary_specialists: false
+
+# ================================================================
+# STRATEGIES
+# ================================================================
 strategies:
-  # For general-purpose queries where quality is most important, but not at any cost.
   default:
-    quality_weight: 0.6
-    cost_weight: 0.2
-    latency_weight: 0.1
-    reliability_weight: 0.1
+    quality_weight: 0.55
+    cost_weight: 0.15
+    latency_weight: 0.10
+    reliability_weight: 0.10
+    policy_weight: 0.10
 
-  # For critical tasks where the absolute best-quality answer is required, regardless of cost.
   max_quality:
-    quality_weight: 0.8
-    cost_weight: 0.1
+    quality_weight: 0.70
+    cost_weight: 0.05
     latency_weight: 0.05
-    reliability_weight: 0.05
+    reliability_weight: 0.10
+    policy_weight: 0.10
 
-  # For non-critical, bulk processing tasks where minimizing expense is the top priority.
   cost:
-    quality_weight: 0.2
-    cost_weight: 0.65
-    latency_weight: 0.1
+    quality_weight: 0.15
+    cost_weight: 0.60
+    latency_weight: 0.10
     reliability_weight: 0.05
+    policy_weight: 0.10
 
-  # For interactive, real-time applications where the speed of the response is paramount.
   latency:
-    quality_weight: 0.2
-    cost_weight: 0.1
-    latency_weight: 0.65
-    reliability_weight: 0.05
+    quality_weight: 0.15
+    cost_weight: 0.10
+    latency_weight: 0.55
+    reliability_weight: 0.10
+    policy_weight: 0.10
 
-  # A versatile, all-around strategy for a good mix of performance.
   balanced:
-    quality_weight: 0.4
-    cost_weight: 0.3
-    latency_weight: 0.2
-    reliability_weight: 0.1
-
-  # For all coding-related tasks, using the specialized 'coding_score' for quality.
-  best-for-coding:
-    use_coding_score: true
-    quality_weight: 0.7
-    cost_weight: 0.1
-    latency_weight: 0.1
-    reliability_weight: 0.1
-  
-  # --- Dynamic Strategies used by the "smart-balanced" mode ---
-
-  # Used by 'smart-balanced' for expensive requests; prioritizes quality.
-  quality-focused-balanced:
-    quality_weight: 0.5
-    cost_weight: 0.2
+    quality_weight: 0.35
+    cost_weight: 0.20
     latency_weight: 0.15
     reliability_weight: 0.15
+    policy_weight: 0.15
 
-  # Used by 'smart-balanced' for cheap requests; prioritizes speed.
-  latency-focused-balanced:
-    quality_weight: 0.3
-    cost_weight: 0.25
-    latency_weight: 0.3
+  best_for_coding:
+    use_coding_score: true
+    quality_weight: 0.55
+    cost_weight: 0.10
+    latency_weight: 0.10
+    reliability_weight: 0.10
+    policy_weight: 0.15
+
+  smart_balanced:
+    mode: "dynamic_meta_strategy"
+    cheap_path: "latency_focused_balanced"
+    expensive_path: "quality_focused_balanced"
+
+  quality_focused_balanced:
+    quality_weight: 0.45
+    cost_weight: 0.15
+    latency_weight: 0.10
     reliability_weight: 0.15
+    policy_weight: 0.15
+
+  latency_focused_balanced:
+    quality_weight: 0.25
+    cost_weight: 0.20
+    latency_weight: 0.25
+    reliability_weight: 0.15
+    policy_weight: 0.15
 
 # ================================================================
-# Image Strategy Definitions (Production-Optimized v2)
+# IMAGE / GENERATION STRATEGIES
 # ================================================================
 image_strategies:
-  # For realistic, high-quality photography-like images.
   photorealistic:
-    quality_weight: 0.60   # maximize visual fidelity
+    quality_weight: 0.55
+    artistic_weight: 0.10
     speed_weight: 0.10
+    cost_weight: 0.05
+    reliability_weight: 0.20
+
+  artistic:
+    quality_weight: 0.35
+    artistic_weight: 0.35
+    speed_weight: 0.05
+    cost_weight: 0.05
+    reliability_weight: 0.20
+
+  fast_preview:
+    quality_weight: 0.10
+    artistic_weight: 0.10
+    speed_weight: 0.45
+    cost_weight: 0.20
+    reliability_weight: 0.15
+
+  diagram:
+    quality_weight: 0.60
+    artistic_weight: 0.05
+    speed_weight: 0.10
+    cost_weight: 0.05
+    reliability_weight: 0.20
+
+  balanced:
+    quality_weight: 0.40
+    artistic_weight: 0.15
+    speed_weight: 0.15
     cost_weight: 0.10
     reliability_weight: 0.20
 
-  # For creative, stylized, or imaginative outputs.
-  artistic:
-    use_artistic_score: true
-    quality_weight: 0.50   # still care about fidelity
-    speed_weight: 0.10
-    cost_weight: 0.05      # cost is less important here
-    reliability_weight: 0.35  # avoid broken results
+# ================================================================
+# ROUTE POLICIES
+# ================================================================
+route_policies:
+  default:
+    strategy: default
+    avoid_degraded_providers: false
+    allow_degraded_fallback: true
 
-  # For fast, cheap previews (drafts, thumbnails).
-  fast_preview:
-    quality_weight: 0.15   # willing to sacrifice fidelity
-    speed_weight: 0.50     # prioritize responsiveness
-    cost_weight: 0.25
-    reliability_weight: 0.10
-
-  # For clear, accurate technical diagrams and flowcharts.
-  diagram:
-    quality_weight: 0.70   # prioritize clarity/accuracy
-    speed_weight: 0.10
-    cost_weight: 0.05
-    reliability_weight: 0.15
-
-  # Smart “catch-all” fallback when intent is unclear.
   balanced:
-    quality_weight: 0.50   # safe middle ground
-    speed_weight: 0.15
-    cost_weight: 0.15
-    reliability_weight: 0.20
+    strategy: balanced
+    avoid_degraded_providers: false
+    allow_degraded_fallback: true
+
+  smart_balanced:
+    strategy: smart_balanced
+    avoid_degraded_providers: false
+    allow_degraded_fallback: true
+
+  max_quality:
+    strategy: max_quality
+    preferred_providers: ["openai", "anthropic", "google"]
+    avoid_degraded_providers: true
+    allow_degraded_fallback: true
+
+  cost:
+    strategy: cost
+    preferred_providers: ["google", "mistral"]
+    avoid_degraded_providers: false
+    allow_degraded_fallback: true
+
+  latency:
+    strategy: latency
+    preferred_providers: ["google", "openai", "mistral"]
+    avoid_degraded_providers: true
+    allow_degraded_fallback: true
+
+  best_for_coding:
+    strategy: best_for_coding
+    preferred_providers: ["openai", "anthropic"]
+    avoid_degraded_providers: true
+    allow_degraded_fallback: true
+
+  force_strict:
+    strategy: default
+    avoid_degraded_providers: true
+    allow_degraded_fallback: false
+
+# ================================================================
+# FALLBACK GRAPHS
+# ================================================================
+fallback_graphs:
+  text_generation:
+    default: ["gpt-5.4", "claude-sonnet-4-6", "gpt-4o", "gemini-2.5-pro", "mistral-large-3", "gemini-2.5-flash"]
+    balanced: ["gpt-4o", "claude-sonnet-4-6", "gemini-2.5-flash", "mistral-large-3", "gpt-5.4"]
+    smart_balanced: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "mistral-large-3", "gpt-4o", "claude-sonnet-4-6"]
+    max_quality: ["gpt-5.4", "claude-opus-4-7", "claude-sonnet-4-6", "gpt-4o", "gemini-2.5-pro"]
+    cost: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "mistral-large-3", "gpt-4o"]
+    latency: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gpt-4o", "mistral-large-3"]
+    best_for_coding: ["gpt-5.4-mini", "gpt-5.4", "claude-sonnet-4-6", "gpt-4o"]
+    force_strict: []
+
+  embeddings:
+    default: ["provider_native_embedding", "fallback_embedding"]
+    balanced: ["provider_native_embedding", "fallback_embedding"]
+
+  ocr:
+    default: ["ocr-3-premier", "provider_vision_ocr_fallback"]
+    balanced: ["ocr-3-premier", "provider_vision_ocr_fallback"]
+
+  transcription:
+    default: ["gpt-4o-transcribe-diarize", "voxtral-mini-transcribe-realtime", "gpt-realtime-1.5"]
+    balanced: ["voxtral-mini-transcribe-realtime", "gpt-4o-transcribe-diarize", "gpt-realtime-1.5"]
+
+  image_understanding:
+    default: ["gpt-4o", "gemini-2.5-pro", "gemini-2.5-flash", "mistral-large-3"]
+    balanced: ["gemini-2.5-flash", "gpt-4o", "mistral-large-3", "gemini-2.5-pro"]
+
+  image_generation:
+    default: ["gpt-image-1.5", "imagen-4-generate"]
+    balanced: ["gpt-image-1.5", "imagen-4-generate"]
+
+  image_editing:
+    default: ["gpt-image-1.5"]
+    balanced: ["gpt-image-1.5"]
+
+  tts:
+    default: ["gpt-4o-mini-tts", "gemini-2.5-flash-tts", "tts-1-hd"]
+    balanced: ["gpt-4o-mini-tts", "gemini-2.5-flash-tts", "tts-1-hd"]
+
+  video_understanding:
+    default: ["gemini-2.5-pro", "gemini-2.5-flash", "gpt-4o"]
+    balanced: ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o"]
+
+# ================================================================
+# ASYNC RUNTIME
+# ================================================================
+async_runtime:
+  enabled: true
+  queue_backend: "redis_or_queue_service"
+  default_priority: "normal"
+  checkpointing_enabled: true
+  max_retries_per_stage: 2
+  dead_letter_enabled: true
+
+# ================================================================
+# OBSERVABILITY
+# ================================================================
+observability:
+  metrics_enabled: true
+  tracing_enabled: true
+  structured_logs_enabled: true
+  route_explanation_persistence: true
+  audit_log_enabled: true
+
+# ================================================================
+# EVALUATION
+# ================================================================
+evaluation:
+  routing_eval_enabled: true
+  retrieval_eval_enabled: true
+  tool_eval_enabled: true
+  multimodal_eval_enabled: true
+  generation_eval_enabled: true
+  failover_eval_enabled: true
+
+# ================================================================
+# GOVERNANCE / TENANCY
+# ================================================================
+governance:
+  policy_engine_enabled: true
+  multi_tenancy_enabled: true
+  tenant_isolation_required: true
+  signed_artifact_urls: true
+  secret_manager_required: true
+  rbac_enabled: true

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/dileep-u-k/llm-gateway/internal/llm"
+	"github.com/dileep-u-k/llm-gateway/internal/ops"
+	"github.com/dileep-u-k/llm-gateway/internal/platform"
 	"github.com/dileep-u-k/llm-gateway/internal/tools"
 
 	"github.com/gin-gonic/gin"
@@ -47,7 +49,7 @@ func main() {
 		log.Fatalf("❌ FATAL: %v", err)
 	}
 
-	profiler := llm.NewProfiler(rdb)
+	profiler := llm.NewProfiler(rdb, cfg.RouterConfig)
 	ragService, err := llm.NewRAGService(cfg.RAGConfig)
 	if err != nil {
 		log.Fatalf("❌ FATAL: Could not create RAG service: %v", err)
@@ -59,6 +61,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("❌ FATAL: %v", err)
 	}
+	memoryEngine := llm.NewMemoryEngine(rdb)
+	contextComposer := llm.NewContextComposer()
+	relevanceThreshold, _ := cfg.RouterConfig.Thresholds["relevance_threshold"].(float64)
+	groundingEngine := llm.NewGroundingPolicyEngine(relevanceThreshold)
 
 	// *** NEW: Initialize the PromptAnalyzer service. ***
 	// This service will automatically select a routing preference if the user does not provide one.
@@ -67,7 +73,7 @@ func main() {
 	// Initialize Image Clients with robust, fatal error handling
 	imageClients := make(map[string]llm.ImageClient)
 	// --- FIX START: Iterate over ENABLED_IMAGE_MODELS for client creation ---
-	enabledImageModelsList := strings.Split(cfg.EnabledImageModels, ",")
+	enabledImageModelsList := cleanModelList(strings.Split(cfg.EnabledImageModels, ","))
 	for _, imageModelID := range enabledImageModelsList {
 		imageModelID = strings.TrimSpace(imageModelID) // Clean up any whitespace
 
@@ -109,28 +115,106 @@ func main() {
 	// --- FIX END ---
 
 	imageRouter := llm.NewImageRouter(cfg.EnabledImageModels, profiler, cfg.RouterConfig)
+	speechClients := make(map[string]llm.SpeechClient)
+	enabledSpeechModelsList := cleanModelList(strings.Split(cfg.EnabledSpeechModels, ","))
+	for _, speechModelID := range enabledSpeechModelsList {
+		speechModelID = strings.TrimSpace(speechModelID)
+		if speechModelID == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(speechModelID, "gpt"), strings.HasPrefix(speechModelID, "tts-"):
+			apiKey := os.Getenv("OPENAI_API_KEY")
+			if apiKey == "" {
+				log.Fatalf("❌ FATAL: OPENAI_API_KEY is not set, required for speech models.")
+			}
+			speechClient, clientErr := llm.NewOpenAISpeechClient(apiKey)
+			if clientErr != nil {
+				log.Fatalf("❌ FATAL: Failed to create OpenAI Speech Client for %s: %v", speechModelID, clientErr)
+			}
+			speechClients[speechModelID] = speechClient
+		default:
+			log.Printf("WARNING: Unknown speech model provider for %s, skipping client creation.", speechModelID)
+		}
+	}
+	log.Printf("✅ %d speech clients initialized.", len(speechClients))
+
+	allEnabledModels := append(append([]string{}, cfg.EnabledModels...), enabledImageModelsList...)
+	allEnabledModels = append(allEnabledModels, enabledSpeechModelsList...)
+	controlPlane := llm.NewControlPlane(cfg.RouterConfig, profiler, router, allEnabledModels, cfg.APIKeys)
+	multimodalRuntime := llm.NewMultimodalRuntime(rdb, controlPlane)
+	generationRuntime := llm.NewGenerationRuntime(multimodalRuntime.ArtifactRegistry(), imageRouter, imageClients, speechClients, cfg.RouterConfig, platform.CleanArtifactStorageRoot(cfg.ArtifactStorageRoot))
+	authenticator := platform.NewAuthenticatorFromEnv()
+	policyStore := platform.NewPolicyBundleStore(rdb)
+	policyEngine := platform.NewEngine(cfg.PlatformConfig, policyStore, cfg.ModelCosts)
+	auditLogger := platform.NewAuditLogger(rdb)
+	artifactAccess := platform.NewSignedArtifactAccessLayerFromEnv(cfg.PlatformConfig.Defaults.SignedURLTTL)
 
 	// Correctly inject ALL components into the GatewayHandler.
-	gatewayHandler := NewGatewayHandler(llmClients, profiler, router, ragService, intentAnalyzer, toolManager, promptAnalyzer, cfg, rdb, imageClients, imageRouter)
+	gatewayHandler := NewGatewayHandler(llmClients, profiler, router, controlPlane, ragService, intentAnalyzer, toolManager, promptAnalyzer, memoryEngine, contextComposer, groundingEngine, multimodalRuntime, generationRuntime, cfg, rdb, imageClients, speechClients, imageRouter, nil, authenticator, policyEngine, auditLogger, artifactAccess, cfg.ArtifactStorageRoot)
+	asyncConfig := ops.DefaultConfig()
+	asyncConfig.Workers = cfg.AsyncWorkers
+	asyncRuntime := ops.NewRuntime(rdb, ops.PrepareFunc(gatewayHandler.prepareExecutionContext), ops.ExecuteFunc(gatewayHandler.executeManagedSync), asyncConfig, nil)
+	gatewayHandler.opsRuntime = asyncRuntime
 	log.Println("✅ All services initialized.")
 	// --- END OF CORRECTION ---
 
 	// 3. START BACKGROUND PROCESSES
 	// Combine both text and image models into a single list for the health checker.
-	allEnabledModels := append(cfg.EnabledModels, enabledImageModelsList...) // Use the parsed list
-	go startHealthChecker(allEnabledModels, llmClients, imageClients, profiler)
+	go startHealthChecker(allEnabledModels, llmClients, imageClients, speechClients, ragService, profiler, cfg.RAGConfig.EmbeddingModel)
+	if cfg.AsyncWorkersEnabled {
+		asyncRuntime.Start(context.Background())
+		log.Printf("✅ Async workers started (%d workers).", cfg.AsyncWorkers)
+	}
 	// --- END OF CORRECTION ---
 
 	// 4. SETUP AND RUN THE WEB SERVER
+	if !cfg.HTTPEnabled {
+		log.Println("ℹ️ HTTP server disabled; running worker-only mode.")
+		waitForShutdownSignal()
+		return
+	}
 	gin.SetMode(os.Getenv("GIN_MODE"))
 	engine := gin.Default()
+	engine.GET("/", gatewayHandler.ServeProductUI)
+	engine.GET("/admin", gatewayHandler.ServeAdminUI)
+	engine.GET("/ui/*filepath", gatewayHandler.ServeStaticAsset)
+	engine.GET("/healthz", gatewayHandler.HandleHealthz)
+	engine.GET("/readyz", gatewayHandler.HandleReadyz)
 	v1 := engine.Group("/api/v1")
 	{
 		v1.POST("/generate", gatewayHandler.HandleGeneration)
+		v1.POST("/assets/upload", gatewayHandler.HandleAssetUpload)
+		v1.GET("/artifacts", gatewayHandler.HandleArtifacts)
+		v1.GET("/artifacts/:id", gatewayHandler.HandleArtifactMetadata)
+		v1.GET("/artifacts/:id/content", gatewayHandler.HandleArtifactContent)
+		v1.GET("/jobs/:id", gatewayHandler.HandleJobStatus)
+		v1.GET("/jobs/:id/result", gatewayHandler.HandleJobResult)
+		v1.POST("/jobs/:id/cancel", gatewayHandler.HandleCancelJob)
+		v1.GET("/metrics", gatewayHandler.HandleMetrics)
+		v1.GET("/dashboards", gatewayHandler.HandleDashboards)
+		v1.POST("/evaluations/run", gatewayHandler.HandleEvaluationRun)
+		v1.POST("/replay/:id", gatewayHandler.HandleReplayExecution)
+		v1.GET("/platform/bootstrap", gatewayHandler.HandlePlatformBootstrap)
+		v1.GET("/platform/me", gatewayHandler.HandlePlatformMe)
+		v1.GET("/platform/admin/overview", gatewayHandler.HandleAdminOverview)
+		v1.GET("/platform/admin/policies", gatewayHandler.HandleAdminPolicies)
+		v1.PUT("/platform/admin/policies/:tenant/:workspace", gatewayHandler.HandleAdminPolicyUpsert)
+		v1.POST("/platform/admin/policies/simulate", gatewayHandler.HandleAdminPolicySimulation)
+		v1.GET("/platform/admin/jobs", gatewayHandler.HandleAdminJobs)
+		v1.GET("/platform/admin/orchestrations", gatewayHandler.HandleAdminOrchestrations)
+		v1.GET("/platform/admin/audit", gatewayHandler.HandleAdminAudit)
+		v1.GET("/platform/admin/schema", gatewayHandler.HandleSchema)
 	}
 
 	srv := &http.Server{Addr: fmt.Sprintf(":%s", os.Getenv("PORT")), Handler: engine}
 	runServerWithGracefulShutdown(srv)
+}
+
+func waitForShutdownSignal() {
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
 }
 
 // initializeLLMClients creates instances of the LLM clients based on config.
@@ -139,6 +223,10 @@ func initializeLLMClients(cfg *AppConfig) (map[string]llm.LLMClient, error) {
 	var err error
 	// --- THIS LINE IS THE FIX ---
 	for _, modelID := range cfg.EnabledModels {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
 		apiKey := cfg.APIKeys[modelID]
 		var client llm.LLMClient
 		switch {
@@ -183,7 +271,7 @@ func initializeToolManager(cfg *AppConfig) (*tools.ToolManager, error) {
 }
 
 // startHealthChecker runs a background goroutine to proactively check model health.
-func startHealthChecker(allEnabledModels []string, clients map[string]llm.LLMClient, imageClients map[string]llm.ImageClient, profiler *llm.Profiler) {
+func startHealthChecker(allEnabledModels []string, clients map[string]llm.LLMClient, imageClients map[string]llm.ImageClient, speechClients map[string]llm.SpeechClient, ragService *llm.RAGService, profiler *llm.Profiler, embeddingModel string) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -191,40 +279,99 @@ func startHealthChecker(allEnabledModels []string, clients map[string]llm.LLMCli
 
 	runChecks := func() {
 		log.Println("🩺 Running proactive health checks...")
+		providerStatuses := make(map[string][]llm.HealthStatus)
+		providerAccess := make(map[string]bool)
 
 		for _, modelID := range allEnabledModels {
 			modelID = strings.TrimSpace(modelID) // Crucial: trim whitespace from model IDs
+			provider := llm.ProviderForModel(modelID)
 
 			// Check if it's a text model
 			if client, ok := clients[modelID]; ok {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				config := &llm.GenerationConfig{Model: modelID, MaxTokens: 5}
 				healthCheckPrompt := []llm.Message{{Role: llm.RoleUser, Content: "What is the capital of India?"}}
-
+				start := time.Now()
 				_, err := client.Generate(ctx, healthCheckPrompt, config, nil)
 				cancel()
-
-				isHealthy := err == nil
-				profiler.UpdateProfileOnHealthCheck(context.Background(), modelID, isHealthy)
-				log.Printf("Health check for text model %s: Healthy = %v", modelID, isHealthy)
+				status, accessAllowed := llm.ClassifyProbeError(err)
+				if err == nil {
+					status = llm.HealthStatusOnline
+					accessAllowed = true
+				}
+				probe := llm.HealthProbeResult{Status: status, AccessAllowed: accessAllowed, Latency: time.Since(start), Err: err}
+				profiler.UpdateModelHealthCheck(context.Background(), modelID, probe)
+				profiler.UpdateCapabilityHealthCheck(context.Background(), provider, modelID, llm.CapabilityTextGeneration, probe)
+				providerStatuses[provider] = append(providerStatuses[provider], probe.Status)
+				providerAccess[provider] = providerAccess[provider] || probe.AccessAllowed
+				log.Printf("Health check for text model %s: status=%s access=%v", modelID, probe.Status, probe.AccessAllowed)
 				continue // Move to the next model
 			}
 
 			// Check if it's an image model using the modelID as the key
 			if imageClient, ok := imageClients[modelID]; ok { // Now `imageClients` is keyed by modelID
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				// Use a simple, generic prompt for image health checks.
-				// The actual generated image is not used, just the success/failure of the call.
+				start := time.Now()
 				_, err := imageClient.GenerateImage(ctx, "a single red square", modelID)
 				cancel()
-
-				isHealthy := err == nil
-				profiler.UpdateProfileOnHealthCheck(context.Background(), modelID, isHealthy)
-				log.Printf("Health check for image model %s: Healthy = %v", modelID, isHealthy)
+				status, accessAllowed := llm.ClassifyProbeError(err)
+				if err == nil {
+					status = llm.HealthStatusOnline
+					accessAllowed = true
+				}
+				probe := llm.HealthProbeResult{Status: status, AccessAllowed: accessAllowed, Latency: time.Since(start), Err: err}
+				profiler.UpdateModelHealthCheck(context.Background(), modelID, probe)
+				profiler.UpdateCapabilityHealthCheck(context.Background(), provider, modelID, llm.CapabilityImageGeneration, probe)
+				providerStatuses[provider] = append(providerStatuses[provider], probe.Status)
+				providerAccess[provider] = providerAccess[provider] || probe.AccessAllowed
+				log.Printf("Health check for image model %s: status=%s access=%v", modelID, probe.Status, probe.AccessAllowed)
 				continue // Move to the next model
 			}
 
+			if speechClient, ok := speechClients[modelID]; ok {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				start := time.Now()
+				_, err := speechClient.SynthesizeSpeech(ctx, llm.SpeechSynthesisRequest{
+					Model:  modelID,
+					Input:  "Health check.",
+					Voice:  "alloy",
+					Format: "mp3",
+				})
+				cancel()
+				status, accessAllowed := llm.ClassifyProbeError(err)
+				if err == nil {
+					status = llm.HealthStatusOnline
+					accessAllowed = true
+				}
+				probe := llm.HealthProbeResult{Status: status, AccessAllowed: accessAllowed, Latency: time.Since(start), Err: err}
+				profiler.UpdateModelHealthCheck(context.Background(), modelID, probe)
+				profiler.UpdateCapabilityHealthCheck(context.Background(), provider, modelID, llm.CapabilityTTS, probe)
+				providerStatuses[provider] = append(providerStatuses[provider], probe.Status)
+				providerAccess[provider] = providerAccess[provider] || probe.AccessAllowed
+				log.Printf("Health check for speech model %s: status=%s access=%v", modelID, probe.Status, probe.AccessAllowed)
+				continue
+			}
+
 			log.Printf("WARNING: Model '%s' is in the enabled list but no client was found for it. Skipping health check.", modelID)
+		}
+
+		if ragService != nil && embeddingModel != "" {
+			provider := llm.ProviderForModel(embeddingModel)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			probe := ragService.ProbeEmbeddings(ctx)
+			cancel()
+			profiler.UpdateCapabilityHealthCheck(context.Background(), provider, embeddingModel, llm.CapabilityEmbeddings, probe)
+			providerStatuses[provider] = append(providerStatuses[provider], probe.Status)
+			providerAccess[provider] = providerAccess[provider] || probe.AccessAllowed
+			log.Printf("Health check for embeddings %s: status=%s access=%v", embeddingModel, probe.Status, probe.AccessAllowed)
+		}
+
+		for provider, statuses := range providerStatuses {
+			aggregateStatus := llm.CombineHealthStatuses(statuses...)
+			profiler.UpdateProviderHealthCheck(context.Background(), provider, llm.HealthProbeResult{
+				Status:        aggregateStatus,
+				AccessAllowed: providerAccess[provider],
+			})
 		}
 	}
 
@@ -256,4 +403,15 @@ func runServerWithGracefulShutdown(srv *http.Server) {
 	}
 
 	log.Println("👋 Server exited gracefully.")
+}
+
+func cleanModelList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/dileep-u-k/llm-gateway/internal/llm"
+	"github.com/dileep-u-k/llm-gateway/internal/platform"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
@@ -18,14 +19,20 @@ import (
 type AppConfig struct {
 	EnabledModels []string
 	// --- ADD THIS LINE ---
-	EnabledImageModels string
-	APIKeys            map[string]string
-	ModelCosts         map[string]map[string]float64
-	ModelBudgets       map[string]float64
-	RouterConfig       *llm.RouterConfig
-	RAGConfig          *llm.Config // Assuming RAG config is needed
-	RedisAddr          string
-	NewsAPIKey         string
+	EnabledImageModels  string
+	EnabledSpeechModels string
+	APIKeys             map[string]string
+	ModelCosts          map[string]map[string]float64
+	ModelBudgets        map[string]float64
+	RouterConfig        *llm.RouterConfig
+	RAGConfig           *llm.Config // Assuming RAG config is needed
+	RedisAddr           string
+	NewsAPIKey          string
+	PlatformConfig      *platform.Config
+	ArtifactStorageRoot string
+	HTTPEnabled         bool
+	AsyncWorkersEnabled bool
+	AsyncWorkers        int
 }
 
 // LoadConfig loads all configuration from a .env file, environment variables, and config.yaml.
@@ -52,13 +59,18 @@ func LoadConfig() (*AppConfig, error) {
 		RedisAddr:    os.Getenv("REDIS_ADDR"),
 		NewsAPIKey:   os.Getenv("NEWS_API_KEY"),
 		// --- ADD THIS LINE ---
-		EnabledImageModels: os.Getenv("ENABLED_IMAGE_MODELS"),
+		EnabledImageModels:  os.Getenv("ENABLED_IMAGE_MODELS"),
+		EnabledSpeechModels: os.Getenv("ENABLED_SPEECH_MODELS"),
+		ArtifactStorageRoot: os.Getenv("ARTIFACT_STORAGE_ROOT"),
+		HTTPEnabled:         parseEnvBool("HTTP_ENABLED", true),
+		AsyncWorkersEnabled: parseEnvBool("ASYNC_WORKERS_ENABLED", true),
+		AsyncWorkers:        parseEnvInt("ASYNC_WORKERS", 3),
 	}
 
 	// This loop now correctly handles both text and image model costs and budgets.
-	allModelsStr := os.Getenv("ENABLED_MODELS") + "," + os.Getenv("ENABLED_IMAGE_MODELS")
+	allModelsStr := os.Getenv("ENABLED_MODELS") + "," + os.Getenv("ENABLED_IMAGE_MODELS") + "," + os.Getenv("ENABLED_SPEECH_MODELS")
 	allModels := strings.Split(allModelsStr, ",")
-	cfg.EnabledModels = strings.Split(os.Getenv("ENABLED_MODELS"), ",")
+	cfg.EnabledModels = splitNonEmpty(os.Getenv("ENABLED_MODELS"))
 
 	for _, modelID := range allModels {
 		if modelID == "" {
@@ -120,5 +132,53 @@ func LoadConfig() (*AppConfig, error) {
 	}
 	cfg.RAGConfig = ragCfg
 
+	platformCfg, err := platform.LoadConfig("platform.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load platform config: %w", err)
+	}
+	cfg.PlatformConfig = platformCfg
+	if strings.TrimSpace(cfg.ArtifactStorageRoot) == "" {
+		cfg.ArtifactStorageRoot = platformCfg.Defaults.ArtifactRoot
+	}
+
 	return cfg, nil
+}
+
+func splitNonEmpty(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func parseEnvBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func parseEnvInt(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }

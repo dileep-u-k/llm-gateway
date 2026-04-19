@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-gateway-config
+  namespace: llm-gateway
+data:
+  GIN_MODE: "release"
+  PORT: "8081"
+  REDIS_ADDR: "redis.llm-gateway.svc.cluster.local:6379"
+  ENABLED_MODELS: "gpt-4o,gemini-1.5-flash-latest,claude-sonnet-4-20250514,mistral-large-latest"
+  ENABLED_IMAGE_MODELS: "dall-e-3"
+  ENABLED_SPEECH_MODELS: "gpt-4o-mini-tts"
+  HTTP_ENABLED: "true"
+  ASYNC_WORKERS_ENABLED: "false"
+  ASYNC_WORKERS: "4"
+  ARTIFACT_STORAGE_ROOT: "/var/lib/llm-gateway/artifacts"
+  PLATFORM_SIGNED_URL_TTL: "15m"

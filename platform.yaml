@@ -1,0 +1,62 @@
+defaults:
+  tenant_id: default
+  workspace_id: sandbox
+  signed_url_ttl: 15m
+  artifact_root: data/artifacts
+
+policies:
+  default:
+    name: default
+    description: Broad enterprise-safe default policy with multimodal access, signed artifacts, and controlled force semantics.
+    provider_allowlist: [openai, anthropic, google, mistral]
+    capability_allowlist: [text_generation, image_understanding, image_generation, image_editing, transcription, tts, video_understanding]
+    tool_allowlist: [calculator, weather, news]
+    force_scope_allowlist: [primary_reasoner_force, capability_scoped_force]
+    strict_force_allowed_roles: [admin, operator]
+    require_grounding_for: [knowledge_grounded]
+    async_only_task_types: [video_generation_hook]
+    max_prompt_chars: 24000
+    max_artifacts_per_request: 8
+    generation_allowed: true
+    artifact_access_mode: signed_url
+    artifact_retention_hours: 72
+
+  restricted:
+    name: restricted
+    description: Lower-cost workspace policy with grounded analysis, limited tooling, and no open-ended generation.
+    provider_allowlist: [openai, google]
+    capability_allowlist: [text_generation, image_understanding, tts]
+    tool_allowlist: [calculator, weather]
+    force_scope_allowlist: [primary_reasoner_force]
+    strict_force_allowed_roles: [admin]
+    require_grounding_for: [analysis, knowledge_grounded]
+    max_prompt_chars: 12000
+    max_artifacts_per_request: 4
+    max_estimated_input_cost_usd: 0.02
+    generation_allowed: false
+    artifact_access_mode: signed_url
+    artifact_retention_hours: 48
+
+tenants:
+  - id: default
+    name: Default Tenant
+    description: Demo-ready tenant configuration for Phase 6.
+    policy_bundle: default
+    default_workspace: sandbox
+    workspaces:
+      - id: sandbox
+        name: Sandbox
+        description: Full product surface for multimodal experimentation and demos.
+        policy_bundle: default
+        route_default: balanced
+        async_preferred: false
+        tool_permissions: [calculator, weather, news]
+        monthly_budget_usd: 200
+      - id: ops
+        name: Operations
+        description: Constrained workspace for lower-cost, policy-aware platform operations.
+        policy_bundle: restricted
+        route_default: cost
+        async_preferred: true
+        tool_permissions: [calculator, weather]
+        monthly_budget_usd: 75

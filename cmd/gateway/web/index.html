@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Gateway Platform</title>
+  <link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body class="app-shell">
+  <div class="backdrop"></div>
+  <main class="layout">
+    <section class="hero card">
+      <div>
+        <p class="eyebrow">Phase 6 Product Surface</p>
+        <h1>Enterprise multimodal workflows, one request model.</h1>
+        <p class="lede">Run analysis, generation, uploads, async jobs, force controls, and artifact lineage from a single polished workspace.</p>
+      </div>
+      <div class="hero-actions">
+        <a class="button secondary" href="/admin">Open Admin Plane</a>
+        <button id="loadBootstrap" class="button">Refresh Workspace</button>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <article class="card">
+        <div class="section-head">
+          <h2>Workspace</h2>
+          <span id="authModeBadge" class="badge">loading</span>
+        </div>
+        <div class="fields">
+          <label>Bearer Token<input id="token" type="password" placeholder="Optional in open mode"></label>
+          <label>Tenant ID<input id="tenantId" type="text" placeholder="default"></label>
+          <label>Workspace ID<input id="workspaceId" type="text" placeholder="sandbox"></label>
+          <label>User ID<input id="userId" type="text" placeholder="demo-user"></label>
+          <label>Conversation ID<input id="conversationId" type="text" placeholder="design-review-01"></label>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="section-head">
+          <h2>Uploads</h2>
+          <span class="badge">Artifacts</span>
+        </div>
+        <div class="upload-box">
+          <input id="fileInput" type="file" multiple>
+          <button id="uploadBtn" class="button">Upload Selected Files</button>
+        </div>
+        <div id="uploadedArtifacts" class="artifact-list compact"></div>
+      </article>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>Request Composer</h2>
+        <span class="badge">Unified</span>
+      </div>
+      <div class="grid two">
+        <div class="fields">
+          <label>Prompt<textarea id="prompt" rows="7" placeholder="Analyze, generate, compare, narrate, or route across modalities."></textarea></label>
+          <label>Input Type
+            <select id="inputType">
+              <option value="">auto</option>
+              <option value="text">text</option>
+              <option value="document">document</option>
+              <option value="image">image</option>
+              <option value="audio">audio</option>
+              <option value="video">video</option>
+              <option value="mixed">mixed</option>
+            </select>
+          </label>
+          <label>Task Type
+            <select id="taskType">
+              <option value="">auto</option>
+              <option value="analysis">analysis</option>
+              <option value="knowledge_grounded">knowledge_grounded</option>
+              <option value="image_generation">image_generation</option>
+              <option value="image_editing">image_editing</option>
+              <option value="speech_synthesis">speech_synthesis</option>
+              <option value="video_generation_hook">video_generation_hook</option>
+              <option value="creative_bundle">creative_bundle</option>
+            </select>
+          </label>
+          <label>Output Type
+            <select id="outputType">
+              <option value="">auto</option>
+              <option value="summary">summary</option>
+              <option value="answer">answer</option>
+              <option value="image">image</option>
+              <option value="audio">audio</option>
+              <option value="video_bundle">video_bundle</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="fields">
+          <label>Preference
+            <select id="preference">
+              <option value="">auto</option>
+              <option value="balanced">balanced</option>
+              <option value="default">default</option>
+              <option value="cost">cost</option>
+              <option value="latency">latency</option>
+              <option value="max_quality">max_quality</option>
+              <option value="best-for-coding">best-for-coding</option>
+            </select>
+          </label>
+          <label>Answer Mode
+            <select id="answerMode">
+              <option value="">auto</option>
+              <option value="best_effort">best_effort</option>
+              <option value="grounded">grounded</option>
+            </select>
+          </label>
+          <label>Sync Mode
+            <select id="syncPref">
+              <option value="">planner decides</option>
+              <option value="sync">sync</option>
+              <option value="async">async</option>
+            </select>
+          </label>
+          <label>Force Model<input id="forceModel" type="text" placeholder="optional model pin"></label>
+          <label>Force Scope
+            <select id="forceScope">
+              <option value="">auto</option>
+              <option value="primary_reasoner_force">primary_reasoner_force</option>
+              <option value="capability_scoped_force">capability_scoped_force</option>
+              <option value="strict_end_to_end_force">strict_end_to_end_force</option>
+            </select>
+          </label>
+          <div class="toggles">
+            <label><input id="strictForce" type="checkbox"> Strict force</label>
+            <label><input id="requiresGeneration" type="checkbox"> Requires generation</label>
+            <label><input id="requiresOCR" type="checkbox"> Requires OCR</label>
+            <label><input id="requiresTranscription" type="checkbox"> Requires transcription</label>
+          </div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="sendBtn" class="button">Run Workflow</button>
+        <button id="loadArtifactsBtn" class="button secondary">Refresh Artifact Catalog</button>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <article class="card">
+        <div class="section-head">
+          <h2>Response</h2>
+          <span id="responseStatus" class="badge">idle</span>
+        </div>
+        <pre id="responseContent" class="response-box">No response yet.</pre>
+        <div id="mediaPreview"></div>
+      </article>
+
+      <article class="card">
+        <div class="section-head">
+          <h2>Route, Governance, Artifacts</h2>
+          <span class="badge">Inspectable</span>
+        </div>
+        <div id="metadataPanel" class="meta-stack"></div>
+      </article>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>Execution Details</h2>
+        <span class="badge">Plan + Jobs</span>
+      </div>
+      <div id="executionPlan" class="plan-grid"></div>
+      <div id="jobPanel" class="meta-stack"></div>
+    </section>
+  </main>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

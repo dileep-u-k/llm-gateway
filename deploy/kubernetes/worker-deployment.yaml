@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-gateway-worker
+  namespace: llm-gateway
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: llm-gateway-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: llm-gateway-worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/dileep-u-k/llm-gateway:latest
+          envFrom:
+            - configMapRef:
+                name: llm-gateway-config
+            - secretRef:
+                name: llm-gateway-secrets
+          env:
+            - name: HTTP_ENABLED
+              value: "false"
+            - name: ASYNC_WORKERS_ENABLED
+              value: "true"
+            - name: ASYNC_WORKERS
+              value: "6"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "768Mi"
+            limits:
+              cpu: "2"
+              memory: "3Gi"
+          volumeMounts:
+            - name: artifact-storage
+              mountPath: /var/lib/llm-gateway/artifacts
+      volumes:
+        - name: artifact-storage
+          emptyDir: {}

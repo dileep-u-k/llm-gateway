@@ -55,6 +55,20 @@ func (wt *WeatherTool) Definition() Tool {
 	)
 }
 
+func (wt *WeatherTool) Specification() ToolSpecification {
+	return ToolSpecification{
+		Name:            "getCurrentWeather",
+		Capability:      "live_search",
+		InputSchema:     wt.Definition().Function.Parameters,
+		OutputSchema:    JSONSchema{Type: "object"},
+		Timeout:         15 * time.Second,
+		RetryPolicy:     RetryPolicy{MaxAttempts: 2, Backoff: 300 * time.Millisecond},
+		PermissionScope: "gateway:weather",
+		TrustLevel:      TrustLevelMedium,
+		AsyncSuitable:   false,
+	}
+}
+
 // Execute runs the tool's actual logic. It takes the arguments provided by the LLM,
 // calls an external API, and returns the result as a simple string.
 func (wt *WeatherTool) Execute(arguments string) (string, error) {

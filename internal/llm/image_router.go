@@ -56,12 +56,12 @@ func (r *ImageRouter) SelectModel(ctx context.Context, prompt, preference string
 		if modelID == "" {
 			continue
 		}
-		profile, err := r.profiler.GetProfile(ctx, modelID)
+		effectiveHealth, providerHealth, capabilityHealth, profile, err := r.profiler.CombinedModelHealth(ctx, modelID, CapabilityImageGeneration)
 		if err != nil {
 			log.Printf("Could not get profile for image model %s, skipping: %v", modelID, err)
 			continue
 		}
-		if ok, reason := r.passesPreChecks(profile); !ok {
+		if ok, reason := r.passesPreChecks(profile, providerHealth, capabilityHealth, effectiveHealth); !ok {
 			log.Printf("- Filtering Image Model: %s | Reason: %s", modelID, reason)
 			continue
 		}
@@ -136,41 +136,42 @@ func (r *ImageRouter) calculateScore(c imageContender, strategy ImageRoutingStra
 }
 
 // passesPreChecks evaluates an image model against the main configured thresholds.
-func (r *ImageRouter) passesPreChecks(profile *ModelProfile) (bool, string) {
-	// This uses the same robust checks as the main text router.
-	var staleness time.Duration
-	if stalenessVal, ok := r.config.Thresholds["health_check_staleness"].(string); ok {
-		var err error
-		staleness, err = time.ParseDuration(stalenessVal)
-		if err != nil {
-			log.Printf("WARNING: Failed to parse health_check_staleness duration '%s', defaulting to 5m: %v", stalenessVal, err)
-			staleness = 5 * time.Minute // Fallback
-		}
-	} else {
-		staleness = 5 * time.Minute // Default if not found in config
+func (r *ImageRouter) passesPreChecks(
+	profile *ModelProfile,
+	providerHealth *ProviderHealth,
+	capabilityHealth *CapabilityHealth,
+	effectiveHealth HealthStatus,
+) (bool, string) {
+	staleness := r.profiler.healthCheckStaleness()
+	if !providerHealth.AccessAllowed {
+		return false, "Provider access denied."
 	}
-
-	if profile.Status == "offline" {
-		return false, "Model is marked as offline."
+	if !capabilityHealth.AccessAllowed {
+		return false, "Capability access denied."
 	}
-	if time.Since(profile.LastHealthCheck) > staleness {
+	if !capabilityHealth.Supported {
+		return false, "Capability unsupported."
+	}
+	if effectiveHealth == HealthStatusOffline {
+		return false, "Model is offline."
+	}
+	if !profile.CircuitOpenUntil.IsZero() && time.Now().UTC().Before(profile.CircuitOpenUntil) {
+		return false, fmt.Sprintf("Circuit breaker open until %s.", profile.CircuitOpenUntil.Format(time.RFC3339))
+	}
+	if !profile.LastHealthCheck.IsZero() && time.Since(profile.LastHealthCheck) > staleness {
 		return false, fmt.Sprintf("Health check is stale (last check > %s ago).", staleness.Round(time.Second))
 	}
-
-	// --- THIS IS THE FIX/ADDITION for max_error_rate ---
-	var maxErrorRate float64
-	// It's critical to check the type assertion correctly, as YAML unmarshals numbers as float64 by default.
-	if rate, ok := r.config.Thresholds["max_error_rate"].(float64); ok {
-		maxErrorRate = rate
-	} else {
-		// Default to a higher tolerance for image models if not explicitly set in config
-		maxErrorRate = 0.50
+	if !providerHealth.LastHealthCheck.IsZero() && time.Since(providerHealth.LastHealthCheck) > staleness {
+		return false, fmt.Sprintf("Provider health check is stale (>%s).", staleness.Round(time.Second))
 	}
 
+	maxErrorRate := 0.50
+	if rate, ok := r.config.Thresholds["max_error_rate"].(float64); ok {
+		maxErrorRate = rate
+	}
 	if profile.ErrorRate > maxErrorRate {
 		return false, fmt.Sprintf("Error rate is too high (%.2f%% > %.2f%%).", profile.ErrorRate*100, maxErrorRate*100)
 	}
-	// --- END OF FIX/ADDITION ---
 
 	return true, ""
 }

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Gateway Admin Plane</title>
+  <link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body class="app-shell">
+  <div class="backdrop admin"></div>
+  <main class="layout">
+    <section class="hero card">
+      <div>
+        <p class="eyebrow">Phase 6 Control Plane</p>
+        <h1>Operate routing, policy, jobs, traces, and enterprise guardrails.</h1>
+        <p class="lede">Inspect provider health, simulate policies, browse orchestrations, and replay platform decisions from one admin surface.</p>
+      </div>
+      <div class="hero-actions">
+        <a class="button secondary" href="/">Open User Surface</a>
+        <button id="refreshOverview" class="button">Refresh Admin Overview</button>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <article class="card">
+        <div class="section-head">
+          <h2>Admin Auth</h2>
+          <span id="adminAuthMode" class="badge">loading</span>
+        </div>
+        <div class="fields">
+          <label>Bearer Token<input id="adminToken" type="password" placeholder="Admin or operator token"></label>
+          <label>Simulation Tenant<input id="simTenant" type="text" placeholder="default"></label>
+          <label>Simulation Workspace<input id="simWorkspace" type="text" placeholder="sandbox"></label>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="section-head">
+          <h2>Policy Simulator</h2>
+          <span class="badge">Governance</span>
+        </div>
+        <textarea id="simulationRequest" rows="10" class="mono"></textarea>
+        <div class="toolbar">
+          <button id="simulatePolicy" class="button">Simulate</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid three">
+      <article class="card"><h2>Providers</h2><div id="providerPanel" class="meta-stack"></div></article>
+      <article class="card"><h2>Models</h2><div id="modelPanel" class="meta-stack"></div></article>
+      <article class="card"><h2>Policies</h2><div id="policyPanel" class="meta-stack"></div></article>
+    </section>
+
+    <section class="grid two">
+      <article class="card"><h2>Recent Jobs</h2><div id="jobsPanel" class="meta-stack"></div></article>
+      <article class="card"><h2>Recent Orchestrations</h2><div id="orchestrationsPanel" class="meta-stack"></div></article>
+    </section>
+
+    <section class="grid two">
+      <article class="card"><h2>Audit Trail</h2><div id="auditPanel" class="meta-stack"></div></article>
+      <article class="card"><h2>Metrics + Traces</h2><div id="metricsPanel" class="meta-stack"></div></article>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>Policy Override Editor</h2>
+        <span class="badge">Saved to Redis</span>
+      </div>
+      <div class="fields">
+        <label>Tenant<input id="overrideTenant" type="text" placeholder="default"></label>
+        <label>Workspace<input id="overrideWorkspace" type="text" placeholder="sandbox"></label>
+      </div>
+      <textarea id="overridePayload" rows="12" class="mono"></textarea>
+      <div class="toolbar">
+        <button id="saveOverride" class="button">Save Override</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>Simulation Result</h2>
+        <span class="badge">Decision Trace</span>
+      </div>
+      <pre id="simulationOutput" class="response-box">No simulation yet.</pre>
+    </section>
+  </main>
+  <script src="/ui/admin.js"></script>
+</body>
+</html>

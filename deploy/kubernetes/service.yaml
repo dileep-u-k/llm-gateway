@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-gateway-api
+  namespace: llm-gateway
+spec:
+  selector:
+    app.kubernetes.io/name: llm-gateway-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8081

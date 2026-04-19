@@ -70,6 +70,20 @@ func (nt *NewsTool) Definition() Tool {
 	)
 }
 
+func (nt *NewsTool) Specification() ToolSpecification {
+	return ToolSpecification{
+		Name:            "getNewsHeadlines",
+		Capability:      "live_search",
+		InputSchema:     nt.Definition().Function.Parameters,
+		OutputSchema:    JSONSchema{Type: "object"},
+		Timeout:         20 * time.Second,
+		RetryPolicy:     RetryPolicy{MaxAttempts: 2, Backoff: 400 * time.Millisecond},
+		PermissionScope: "gateway:news",
+		TrustLevel:      TrustLevelMedium,
+		AsyncSuitable:   false,
+	}
+}
+
 // Execute runs the tool's logic. It builds a request to the NewsAPI,
 // parses the response, and formats it into a clean summary for the LLM.
 func (nt *NewsTool) Execute(arguments string) (string, error) {
